@@ -13,19 +13,19 @@ $(document).ready(function(){
         var selectedProvider = $('#nzb_method :selected').val();
 
         if (selectedProvider == "blackhole") {
-            $('#blackhole_settings').show();
+            $('#nzb_blackhole_settings').show();
             $('#sabnzbd_settings').hide();
             $('#testSABnzbd').hide();
             $('#testSABnzbd-result').hide();
             $('#nzbget_settings').hide();
         } else if (selectedProvider == "nzbget") {
-            $('#blackhole_settings').hide();
+            $('#nzb_blackhole_settings').hide();
             $('#sabnzbd_settings').hide();
             $('#testSABnzbd').hide();
             $('#testSABnzbd-result').hide();
             $('#nzbget_settings').show();
         } else {
-            $('#blackhole_settings').hide();
+            $('#nzb_blackhole_settings').hide();
             $('#sabnzbd_settings').show();
             $('#testSABnzbd').show();
             $('#testSABnzbd-result').show();
@@ -37,6 +37,24 @@ $(document).ready(function(){
     $('#nzb_method').change($(this).nzb_method_handler);
 
     $(this).nzb_method_handler();
+	
+    $.fn.torrent_method_handler = function() {
+        
+        var selectedProvider = $('#torrent_method :selected').val();
+
+        if (selectedProvider == "blackhole") {
+            $('#torrent_blackhole_settings').show();
+            $('#transmission_settings').hide();
+        } else if (selectedProvider == "transmission") {
+            $('#torrent_blackhole_settings').hide();
+            $('#transmission_settings').show();
+        }
+
+    }
+
+    $('#torrent_method').change($(this).torrent_method_handler);
+
+    $(this).torrent_method_handler();
 
     $('#testSABnzbd').click(function(){
         $('#testSABnzbd-result').html(loading);

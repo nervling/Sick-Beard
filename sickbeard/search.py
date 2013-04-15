@@ -18,11 +18,17 @@
 
 from __future__ import with_statement
 
+import httplib
+import json
 import os
+import re
 import traceback
+import urllib2
+
 
 import sickbeard
 
+from base64 import b64encode
 from common import SNATCHED, Quality, SEASON_RESULT, MULTI_EP_RESULT
 
 from sickbeard import logger, db, show_name_helpers, exceptions, helpers
@@ -116,7 +122,16 @@ def snatchEpisode(result, endStatus=SNATCHED):
 
     # torrents are always saved to disk
     elif result.resultType == "torrent":
-        dlResult = _downloadResult(result)
+        data = helpers.getURL(result.url)
+        host = sickbeard.TRANSMISSION_HOST.split(":")
+        params = {'download-dir' : sickbeard.TRANSMISSION_DOWNLOAD_DIR}
+        try :
+          trpc = TransmissionRPC(host[0], port = host[1], username = sickbeard.TRANSMISSION_USERNAME, password = sickbeard.TRANSMISSION_PASSWORD)
+          trpc.add_torrent_file(b64encode(data), arguments = params)
+          dlResult = True
+        except Exception as e:
+          logger.log(u"Error sending to tranmission:" + str(e), logger.ERROR)
+          dlResult = False
     else:
         logger.log(u"Unknown result type, unable to download it", logger.ERROR)
         dlResult = False
@@ -501,3 +516,99 @@ def findSeason(show, season):
         finalResults.append(pickBestResult(foundResults[curEp]))
 
     return finalResults
+
+class TransmissionRPC(object):
+
+    """TransmissionRPC lite library"""
+
+    def __init__(self, host = 'localhost', port = 9091, username = None, password = None):
+
+        super(TransmissionRPC, self).__init__()
+
+        self.url = 'http://' + host + ':' + str(port) + '/transmission/rpc'
+        self.tag = 0
+        self.session_id = 0
+        self.session = {}
+        if username and password:
+            password_manager = urllib2.HTTPPasswordMgrWithDefaultRealm()
+            password_manager.add_password(realm = None, uri = self.url, user = username, passwd = password)
+            opener = urllib2.build_opener(urllib2.HTTPBasicAuthHandler(password_manager), urllib2.HTTPDigestAuthHandler(password_manager))
+            opener.addheaders = [('User-agent', 'couchpotato-transmission-client/1.0')]
+            urllib2.install_opener(opener)
+        elif username or password:
+            logger.log(u"User or password missing, not using authentication.", logger.DEBUG)
+        self.session = self.get_session()
+
+    def _request(self, ojson):
+        self.tag += 1
+        headers = {'x-transmission-session-id': str(self.session_id)}
+        request = urllib2.Request(self.url, json.dumps(ojson).encode('utf-8'), headers)
+        try:
+            open_request = urllib2.urlopen(request)
+            response = json.loads(open_request.read())
+            logger.log(u"Transmission request: " +  str(json.dumps(ojson)), logger.DEBUG)
+            logger.log(u"Transmission response: " + str(json.dumps(response)), logger.DEBUG)
+            if response['result'] == 'success':
+                logger.log(u"Transmission action successfull", logger.DEBUG)
+                return response['arguments']
+            else:
+                logger.log(u"Unknown failure sending command to Transmission. Return text is: " + str(response['result']), logger.ERROR)
+                return False
+        except httplib.InvalidURL, err:
+            logger.log(u"Invalid Transmission host, check your config: " + str(err), logger.ERROR)
+            return False
+        except urllib2.HTTPError, err:
+            if err.code == 401:
+                logger.log(u"Invalid Transmission Username or Password, check your config", logger.ERROR)
+                return False
+            elif err.code == 409:
+                msg = str(err.read())
+                try:
+                    self.session_id = \
+                        re.search('X-Transmission-Session-Id:\s*(\w+)', msg).group(1)
+                    logger.log(u"X-Transmission-Session-Id: " + str(self.session_id), logger.DEBUG)
+
+                    # #resend request with the updated header
+
+                    return self._request(ojson)
+                except Exception as e:
+                    logger.log(u"Unable to get Transmission Session-Id " + str(err) + " " + msg, logger.ERROR)
+                    logger.log(u"Transmission Session-Id Error: " + str(e), logger.ERROR)
+            else:
+                logger.log(u"TransmissionRPC HTTPError: " + str(err), logger.ERROR)
+        except urllib2.URLError, err:
+            logger.log(u"Unable to connect to Transmission " + str(err), logger.ERROR)
+
+    def get_session(self):
+        post_data = {'method': 'session-get', 'tag': self.tag}
+        return self._request(post_data)
+
+    def add_torrent_uri(self, torrent, arguments):
+        arguments['filename'] = torrent
+        post_data = {'arguments': arguments, 'method': 'torrent-add', 'tag': self.tag}
+        return self._request(post_data)
+
+    def add_torrent_file(self, torrent, arguments):
+        arguments['metainfo'] = torrent
+        post_data = {'arguments': arguments, 'method': 'torrent-add', 'tag': self.tag}
+        return self._request(post_data)
+
+    def set_torrent(self, torrent_id, arguments):
+        arguments['ids'] = torrent_id
+        post_data = {'arguments': arguments, 'method': 'torrent-set', 'tag': self.tag}
+        return self._request(post_data)
+
+    def get_alltorrents(self, arguments):
+        post_data = {'arguments': arguments, 'method': 'torrent-get', 'tag': self.tag}
+        return self._request(post_data)
+
+    def stop_torrent(self, torrent_id, arguments):
+        arguments['ids'] = torrent_id
+        post_data = {'arguments': arguments, 'method': 'torrent-stop', 'tag': self.tag}
+        return self._request(post_data)
+
+    def remove_torrent(self, torrent_id, remove_local_data, arguments):
+        arguments['ids'] = torrent_id
+        arguments['delete-local-data'] = remove_local_data
+        post_data = {'arguments': arguments, 'method': 'torrent-remove', 'tag': self.tag}
+        return self._request(post_data)

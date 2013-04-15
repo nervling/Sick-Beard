@@ -165,6 +165,7 @@ BTN = False
 BTN_API_KEY = None
 
 TORRENT_DIR = None
+TORRENT_METHOD = None
 
 ADD_SHOWS_WO_DIR = None
 CREATE_MISSING_SHOW_DIRS = None
@@ -204,6 +205,11 @@ SAB_PASSWORD = None
 SAB_APIKEY = None
 SAB_CATEGORY = None
 SAB_HOST = ''
+
+TRANSMISSION_USERNAME = None
+TRANSMISSION_PASSWORD = None
+TRANSMISSION_HOST = ''
+TRANSMISSION_DOWNLOAD_DIR = ''
 
 NZBGET_PASSWORD = None
 NZBGET_CATEGORY = None
@@ -326,6 +332,7 @@ def initialize(consoleLogging=True):
         global LOG_DIR, WEB_PORT, WEB_LOG, WEB_ROOT, WEB_USERNAME, WEB_PASSWORD, WEB_HOST, WEB_IPV6, USE_API, API_KEY, ENABLE_HTTPS, HTTPS_CERT, HTTPS_KEY, \
                 USE_NZBS, USE_TORRENTS, NZB_METHOD, NZB_DIR, DOWNLOAD_PROPERS, \
                 SAB_USERNAME, SAB_PASSWORD, SAB_APIKEY, SAB_CATEGORY, SAB_HOST, \
+                TRANSMISSION_USERNAME, TRANSMISSION_PASSWORD, TRANSMISSION_HOST, TRANSMISSION_DOWNLOAD_DIR, \
                 NZBGET_PASSWORD, NZBGET_CATEGORY, NZBGET_HOST, currentSearchScheduler, backlogSearchScheduler, \
                 USE_XBMC, XBMC_NOTIFY_ONSNATCH, XBMC_NOTIFY_ONDOWNLOAD, XBMC_UPDATE_FULL, XBMC_UPDATE_ONLYFIRST, \
                 XBMC_UPDATE_LIBRARY, XBMC_HOST, XBMC_USERNAME, XBMC_PASSWORD, \
@@ -334,7 +341,7 @@ def initialize(consoleLogging=True):
                 PLEX_SERVER_HOST, PLEX_HOST, PLEX_USERNAME, PLEX_PASSWORD, \
                 showUpdateScheduler, __INITIALIZED__, LAUNCH_BROWSER, showList, loadingShowList, \
                 NZBS, NZBS_UID, NZBS_HASH, EZRSS, TVTORRENTS, TVTORRENTS_DIGEST, TVTORRENTS_HASH, BTN, BTN_API_KEY, TORRENTLEECH, TORRENTLEECH_KEY, \
-                TORRENT_DIR, USENET_RETENTION, SOCKET_TIMEOUT, \
+                TORRENT_DIR, TORRENT_METHOD, USENET_RETENTION, SOCKET_TIMEOUT, \
                 SEARCH_FREQUENCY, DEFAULT_SEARCH_FREQUENCY, BACKLOG_SEARCH_FREQUENCY, \
                 QUALITY_DEFAULT, FLATTEN_FOLDERS_DEFAULT, STATUS_DEFAULT, \
                 GROWL_NOTIFY_ONSNATCH, GROWL_NOTIFY_ONDOWNLOAD, TWITTER_NOTIFY_ONSNATCH, TWITTER_NOTIFY_ONDOWNLOAD, \
@@ -541,6 +548,9 @@ def initialize(consoleLogging=True):
         CheckSection(CFG, 'Blackhole')
         NZB_DIR = check_setting_str(CFG, 'Blackhole', 'nzb_dir', '')
         TORRENT_DIR = check_setting_str(CFG, 'Blackhole', 'torrent_dir', '')
+        TORRENT_METHOD = check_setting_str(CFG, 'General', 'torrent_method', 'blackhole')
+        if TORRENT_METHOD not in ('blackhole', 'transmission'):
+            TORRENT_METHOD = 'blackhole'
 
         CheckSection(CFG, 'TVTORRENTS')
         TVTORRENTS = bool(check_setting_int(CFG, 'TVTORRENTS', 'tvtorrents', 0))
@@ -592,7 +602,13 @@ def initialize(consoleLogging=True):
         SAB_PASSWORD = check_setting_str(CFG, 'SABnzbd', 'sab_password', '')
         SAB_APIKEY = check_setting_str(CFG, 'SABnzbd', 'sab_apikey', '')
         SAB_CATEGORY = check_setting_str(CFG, 'SABnzbd', 'sab_category', 'tv')
-        SAB_HOST = check_setting_str(CFG, 'SABnzbd', 'sab_host', '')
+        SAB_HOST = check_setting_str(CFG, 'SABnzbd', 'sab_host', '')       
+
+        CheckSection(CFG, 'Transmission')
+        TRANSMISSION_USERNAME = check_setting_str(CFG, 'Transmission', 'transmission_username', '')
+        TRANSMISSION_PASSWORD = check_setting_str(CFG, 'Transmission', 'transmission_password', '')
+        TRANSMISSION_HOST = check_setting_str(CFG, 'Transmission', 'transmission_host', '')
+        TRANSMISSION_DOWNLOAD_DIR = check_setting_str(CFG, 'Transmission', 'transmission_download_dir', '')
 
         CheckSection(CFG, 'NZBget')
         NZBGET_PASSWORD = check_setting_str(CFG, 'NZBget', 'nzbget_password', 'tegbzn6789')
@@ -991,6 +1007,7 @@ def save_config():
     new_config['General']['use_nzbs'] = int(USE_NZBS)
     new_config['General']['use_torrents'] = int(USE_TORRENTS)
     new_config['General']['nzb_method'] = NZB_METHOD
+    new_config['General']['torrent_method'] = TORRENT_METHOD
     new_config['General']['usenet_retention'] = int(USENET_RETENTION)
     new_config['General']['search_frequency'] = int(SEARCH_FREQUENCY)
     new_config['General']['download_propers'] = int(DOWNLOAD_PROPERS)
@@ -1086,6 +1103,12 @@ def save_config():
     new_config['SABnzbd']['sab_apikey'] = SAB_APIKEY
     new_config['SABnzbd']['sab_category'] = SAB_CATEGORY
     new_config['SABnzbd']['sab_host'] = SAB_HOST
+
+    new_config['Transmission'] = {}
+    new_config['Transmission']['transmission_username'] = TRANSMISSION_USERNAME
+    new_config['Transmission']['transmission_password'] = TRANSMISSION_PASSWORD
+    new_config['Transmission']['transmission_host'] = TRANSMISSION_HOST
+    new_config['Transmission']['transmission_download_dir'] = TRANSMISSION_DOWNLOAD_DIR
 
     new_config['NZBget'] = {}
     new_config['NZBget']['nzbget_password'] = NZBGET_PASSWORD
