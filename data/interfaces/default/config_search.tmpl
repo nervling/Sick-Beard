@@ -290,7 +290,7 @@
                                 </label>
                                 <label class="nocheck clearfix">
                                     <span class="component-title">&nbsp;</span>
-                                    <span class="component-desc">(eg. localhost:9091)</span>
+                                    <span class="component-desc">(eg. http://localhost:9091/)</span>
                                 </label>
                             </div>
                             
@@ -319,7 +319,7 @@
                             <div class="field-pair">
                                 <label class="nocheck clearfix">
                                     <span class="component-title">Download Directory</span>
-                                    <input type="text" name="transmission_download_dir" value="$sickbeard.TRANSMISSION_DOWNLOAD_DIR" size="45" />
+                                    <input type="text" name="transmission_download_dir" id="transmission_download_dir" value="$sickbeard.TRANSMISSION_DOWNLOAD_DIR" size="45" />
                                 </label>
                                 <label class="nocheck clearfix">
                                     <span class="component-title">&nbsp;</span>
@@ -349,6 +349,7 @@
 <!--
     jQuery('#nzb_dir').fileBrowser({ title: 'Select NZB Black Hole/Watch Directory' });
     jQuery('#torrent_dir').fileBrowser({ title: 'Select Torrent Black Hole/Watch Directory' });
+    jQuery('#transmission_download_dir').fileBrowser({ title: 'Select Transmission Download Directory' });
 //-->
 </script>
 

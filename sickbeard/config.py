@@ -121,6 +121,21 @@ def change_TORRENT_DIR(torrent_dir):
 
     return True
 
+def change_TRANSMISSION_DOWNLOAD_DIR(transmission_download_dir):
+
+    if transmission_download_dir == '':
+        sickbeard.TRANSMISSION_DOWNLOAD_DIR = ''
+        return True
+
+    if os.path.normpath(sickbeard.TRANSMISSION_DOWNLOAD_DIR) != os.path.normpath(transmission_download_dir):
+        if helpers.makeDir(transmission_download_dir):
+            sickbeard.TRANSMISSION_DOWNLOAD_DIR = os.path.normpath(transmission_download_dir)
+            logger.log(u"Changed transmission download folder to " + transmission_download_dir)
+        else:
+            return False
+
+    return True
+
 
 def change_TV_DOWNLOAD_DIR(tv_download_dir):
 

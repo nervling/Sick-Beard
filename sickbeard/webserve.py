@@ -779,6 +779,9 @@ class ConfigSearch:
         if not config.change_TORRENT_DIR(torrent_dir):
             results += ["Unable to create directory " + os.path.normpath(torrent_dir) + ", dir not changed."]
 
+        if not config.change_TRANSMISSION_DOWNLOAD_DIR(transmission_download_dir):
+            results += ["Unable to create directory " + os.path.normpath(transmission_download_dir) + ", dir not changed."]
+
         config.change_SEARCH_FREQUENCY(search_frequency)
 
         if download_propers == "on":
@@ -811,6 +814,13 @@ class ConfigSearch:
         sickbeard.SAB_PASSWORD = sab_password
         sickbeard.SAB_APIKEY = sab_apikey.strip()
         sickbeard.SAB_CATEGORY = sab_category
+
+
+        if transmission_host and not re.match('https?://.*', transmission_host):
+            transmission_host = 'http://' + transmission_host
+
+        if not transmission_host.endswith('/'):
+            transmission_host = transmission_host + '/'
 
         sickbeard.TORRENT_METHOD = torrent_method
         sickbeard.TRANSMISSION_HOST = transmission_host
