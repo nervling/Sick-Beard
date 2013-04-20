@@ -768,7 +768,8 @@ class ConfigSearch:
     @cherrypy.expose
     def saveSearch(self, use_nzbs=None, use_torrents=None, nzb_dir=None, sab_username=None, sab_password=None,
                        sab_apikey=None, sab_category=None, sab_host=None, nzbget_password=None, nzbget_category=None, nzbget_host=None,
-                       torrent_dir=None, nzb_method=None, usenet_retention=None, search_frequency=None, download_propers=None):
+                       torrent_dir=None, nzb_method=None, usenet_retention=None, search_frequency=None, download_propers=None,
+                       torrent_method=None, transmission_host=None, transmission_username=None, transmission_password=None, transmission_download_dir=None):
 
         results = []
 
@@ -777,6 +778,9 @@ class ConfigSearch:
 
         if not config.change_TORRENT_DIR(torrent_dir):
             results += ["Unable to create directory " + os.path.normpath(torrent_dir) + ", dir not changed."]
+
+        if not config.change_TRANSMISSION_DOWNLOAD_DIR(transmission_download_dir):
+            results += ["Unable to create directory " + os.path.normpath(transmission_download_dir) + ", dir not changed."]
 
         config.change_SEARCH_FREQUENCY(search_frequency)
 
@@ -810,6 +814,19 @@ class ConfigSearch:
         sickbeard.SAB_PASSWORD = sab_password
         sickbeard.SAB_APIKEY = sab_apikey.strip()
         sickbeard.SAB_CATEGORY = sab_category
+
+
+        if transmission_host and not re.match('https?://.*', transmission_host):
+            transmission_host = 'http://' + transmission_host
+
+        if not transmission_host.endswith('/'):
+            transmission_host = transmission_host + '/'
+
+        sickbeard.TORRENT_METHOD = torrent_method
+        sickbeard.TRANSMISSION_HOST = transmission_host
+        sickbeard.TRANSMISSION_USERNAME = transmission_username
+        sickbeard.TRANSMISSION_PASSWORD = transmission_password
+        sickbeard.TRANSMISSION_DOWNLOAD_DIR = transmission_download_dir
 
         if sab_host and not re.match('https?://.*', sab_host):
             sab_host = 'http://' + sab_host

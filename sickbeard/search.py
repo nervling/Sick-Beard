@@ -18,6 +18,7 @@
 
 from __future__ import with_statement
 
+import httplib
 import os
 import traceback
 
@@ -31,6 +32,7 @@ from sickbeard import nzbget
 from sickbeard import history
 from sickbeard import notifiers
 from sickbeard import nzbSplitter
+from sickbeard import transmission
 from sickbeard import ui
 from sickbeard import encodingKludge as ek
 from sickbeard import providers
@@ -116,8 +118,11 @@ def snatchEpisode(result, endStatus=SNATCHED):
 
     # torrents are always saved to disk
     elif result.resultType == "torrent":
+      if sickbeard.TORRENT_METHOD == "blackhole":
         dlResult = _downloadResult(result)
-    else:
+      elif sickbeard.TORRENT_METHOD == "transmission":
+        dlResult = transmission.sendTorrent(result)
+      else:
         logger.log(u"Unknown result type, unable to download it", logger.ERROR)
         dlResult = False
 
