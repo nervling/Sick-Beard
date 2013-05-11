@@ -47,6 +47,10 @@ class TwitterNotifier:
     def notify_download(self, ep_name):
         if sickbeard.TWITTER_NOTIFY_ONDOWNLOAD:
             self._notifyTwitter(common.notifyStrings[common.NOTIFY_DOWNLOAD]+': '+ep_name)
+            
+    def notify_subtitle_download(self, ep_name, lang):
+        if sickbeard.TWITTER_NOTIFY_ONSUBTITLEDOWNLOAD:
+            self._notifyTwitter(common.notifyStrings[common.NOTIFY_SUBTITLE_DOWNLOAD]+' '+ep_name + ": " + lang)
 
     def test_notify(self):
         return self._notifyTwitter("This is a test notification from Sick Beard", force=True)
@@ -118,7 +122,7 @@ class TwitterNotifier:
         api = twitter.Api(username, password, access_token_key, access_token_secret)
     
         try:
-            api.PostUpdate(message)
+            api.PostUpdate(message.encode('utf8'))
         except Exception, e:
             logger.log(u"Error Sending Tweet: "+ex(e), logger.ERROR)
             return False

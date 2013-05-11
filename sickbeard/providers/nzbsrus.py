@@ -45,10 +45,10 @@ class NZBsRUSProvider(generic.NZBProvider):
             raise exceptions.AuthException("NZBs'R'US authentication details are empty, check your config")
 
     def _get_season_search_strings(self, show, season):
-        return [x for x in show_name_helpers.makeSceneSeasonSearchString(show, season)]
+        return ['^' + x for x in show_name_helpers.makeSceneSeasonSearchString(show, season)]
 
     def _get_episode_search_strings(self, ep_obj):
-        return [x for x in show_name_helpers.makeSceneSearchString(ep_obj)]
+        return ['^' + x for x in show_name_helpers.makeSceneSearchString(ep_obj)]
 
     def _doSearch(self, search, show=None):
         params = {'uid': sickbeard.NZBSRUS_UID,

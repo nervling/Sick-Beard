@@ -24,6 +24,7 @@ import re, socket
 import shutil
 import traceback
 import time, sys
+import hashlib
 
 from httplib import BadStatusLine
 
@@ -33,7 +34,7 @@ import sickbeard
 
 from sickbeard.exceptions import MultipleShowObjectsException, ex
 from sickbeard import logger, classes
-from sickbeard.common import USER_AGENT, mediaExtensions, XML_NSMAP
+from sickbeard.common import USER_AGENT, mediaExtensions, subtitleExtensions, XML_NSMAP
 
 from sickbeard import db
 from sickbeard import encodingKludge as ek
@@ -42,6 +43,9 @@ from sickbeard import notifiers
 from lib.tvdb_api import tvdb_api, tvdb_exceptions
 
 import xml.etree.cElementTree as etree
+
+from lib import subliminal
+#from sickbeard.subtitles import EXTENSIONS
 
 urllib._urlopener = classes.SickBeardURLopener()
 
@@ -170,6 +174,51 @@ def getURL (url, headers=[]):
         return None
 
     return result
+
+def _remove_file_failed(file):
+    try:
+        os.remove(file)
+    except:
+        pass
+
+def download_file(url, filename):
+    try:
+        req = urllib2.urlopen(url)
+        CHUNK = 16 * 1024
+        with open(filename, 'wb') as fp:
+            while True:
+                chunk = req.read(CHUNK)
+                if not chunk: break
+                fp.write(chunk)
+            fp.close()
+        req.close()
+
+    except urllib2.HTTPError, e:
+        _remove_file_failed(filename)
+        logger.log(u"HTTP error " + str(e.code) + " while loading URL " + url, logger.WARNING)
+        return False
+    except urllib2.URLError, e:
+        _remove_file_failed(filename)
+        logger.log(u"URL error " + str(e.reason) + " while loading URL " + url, logger.WARNING)
+        return False
+    except BadStatusLine:
+        _remove_file_failed(filename)
+        logger.log(u"BadStatusLine error while loading URL " + url, logger.WARNING)
+        return False
+    except socket.timeout:
+        _remove_file_failed(filename)
+        logger.log(u"Timed out while loading URL " + url, logger.WARNING)
+        return False
+    except ValueError:
+        _remove_file_failed(filename)
+        logger.log(u"Unknown error while loading URL " + url, logger.WARNING)
+        return False
+    except Exception:
+        _remove_file_failed(filename)
+        logger.log(u"Unknown exception while loading URL " + url + ": " + traceback.format_exc(), logger.WARNING)
+        return False
+    
+    return True
 
 def findCertainShow (showList, tvdbid):
     results = filter(lambda x: x.tvdbid == tvdbid, showList)
@@ -487,6 +536,17 @@ def rename_ep_file(cur_path, new_path):
     new_dest_dir, new_dest_name = os.path.split(new_path) #@UnusedVariable
     cur_file_name, cur_file_ext = os.path.splitext(cur_path) #@UnusedVariable
 
+    if cur_file_ext[1:] in subtitleExtensions:
+        #Extract subtitle language from filename
+        sublang = os.path.splitext(cur_file_name)[1][1:]
+        
+        #Check if the language extracted from filename is a valid language
+        try:
+            language = subliminal.language.Language(sublang, strict=True)
+            cur_file_ext = '.'+sublang+cur_file_ext 
+        except ValueError:
+            pass
+        
     # put the extension on the incoming file
     new_path += cur_file_ext
 
@@ -539,7 +599,6 @@ def delete_empty_folders(check_empty_dir, keep_dir=None):
         else:
             break
 
-
 def chmodAsParent(childPath):
     if os.name == 'nt' or os.name == 'ce':
         return
@@ -550,7 +609,8 @@ def chmodAsParent(childPath):
         logger.log(u"No parent path provided in "+childPath+", unable to get permissions from it", logger.DEBUG)
         return
     
-    parentMode = stat.S_IMODE(os.stat(parentPath)[stat.ST_MODE])
+    parentPathStat = ek.ek(os.stat, parentPath)
+    parentMode = stat.S_IMODE(parentPathStat[stat.ST_MODE])
     
     childPathStat = ek.ek(os.stat, childPath)
     childPath_mode = stat.S_IMODE(childPathStat[stat.ST_MODE])
@@ -588,7 +648,7 @@ def fixSetGroupID(childPath):
         return
 
     parentPath = ek.ek(os.path.dirname, childPath)
-    parentStat = os.stat(parentPath)
+    parentStat = ek.ek(os.stat, parentPath)
     parentMode = stat.S_IMODE(parentStat[stat.ST_MODE])
 
     if parentMode & stat.S_ISGID:
@@ -705,3 +765,23 @@ def backupVersionedFile(oldFile, version):
         if numTries >= 10:
             logger.log(u"Unable to back up "+oldFile+", please do it manually.")
             sys.exit(1)
+
+# try to convert to int, if it fails the default will be returned
+def tryInt(s, s_default = 0):
+    try: return int(s)
+    except: return s_default
+
+# generates a md5 hash of a file
+def md5_for_file(filename, block_size=2**16):
+    try:    
+        with open(filename,'rb') as f:
+            md5 = hashlib.md5()
+            while True:
+                data = f.read(block_size)
+                if not data:
+                    break
+                md5.update(data)
+            f.close()
+            return md5.hexdigest()
+    except Exception:
+        return None

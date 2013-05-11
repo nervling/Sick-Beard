@@ -19,8 +19,8 @@
 
 # Check needed software dependencies to nudge users to fix their setup
 import sys
-if sys.version_info < (2, 5):
-    print "Sorry, requires Python 2.5, 2.6 or 2.7."
+if sys.version_info < (2, 6):
+    print "Sorry, requires Python 2.6 or 2.7."
     sys.exit(1)
 
 try:
@@ -34,12 +34,14 @@ except:
     print "The Python module Cheetah is required"
     sys.exit(1)
 
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'lib')))
+
 # We only need this for compiling an EXE and I will just always do that on 2.6+
 if sys.hexversion >= 0x020600F0:
     from multiprocessing import freeze_support
 
 import locale
-import os
 import threading
 import time
 import signal
@@ -52,7 +54,6 @@ from sickbeard import db
 from sickbeard.tv import TVShow
 from sickbeard import logger
 from sickbeard.version import SICKBEARD_VERSION
-from sickbeard.databases.mainDB import MAX_DB_VERSION
 
 from sickbeard.webserveInit import initWebServer
 
@@ -163,9 +164,9 @@ def main():
     threading.currentThread().name = "MAIN"
 
     try:
-        opts, args = getopt.getopt(sys.argv[1:], "qfdp::", ['quiet', 'forceupdate', 'port=', 'daemon', 'noresize', 'pidfile=', 'nolaunch', 'config=', 'datadir='])  # @UnusedVariable
+        opts, args = getopt.getopt(sys.argv[1:], "qfdp::", ['quiet', 'forceupdate', 'daemon', 'port=', 'pidfile=', 'nolaunch', 'config=', 'datadir='])  # @UnusedVariable
     except getopt.GetoptError:
-        print "Available Options: --quiet, --forceupdate, --port, --daemon, --noresize, --pidfile, --nolaunch, --config, --datadir"
+        print "Available Options: --quiet, --forceupdate, --port, --daemon, --pidfile, --config, --datadir"
         sys.exit()
 
     forceUpdate = False
@@ -198,10 +199,6 @@ def main():
             else:
                 consoleLogging = False
                 sickbeard.DAEMON = True
-
-        # Prevent resizing of the banner/posters even if PIL is installed
-        if o in ('--noresize',):
-            sickbeard.NO_RESIZE = True
 
         # Specify folder to load the config file from
         if o in ('--config',):
@@ -262,14 +259,6 @@ def main():
 
     sickbeard.CFG = ConfigObj(sickbeard.CONFIG_FILE)
 
-    if db.DBConnection().checkDBVersion() > MAX_DB_VERSION:
-        print 'Your database version has been incremented'
-        print 'past what this version of Sick Beard supports.'
-        print
-        print 'If you have used other forks of SB which have'
-        print 'modified your database it may now be unusable.'
-        sys.exit(1)
-
     # Initialize the config and our threads
     sickbeard.initialize(consoleLogging=consoleLogging)
 
@@ -306,7 +295,7 @@ def main():
         initWebServer({
                       'port': startPort,
                       'host': webhost,
-                      'data_root': os.path.join(sickbeard.PROG_DIR, 'data'),
+                      'data_root': os.path.join(sickbeard.PROG_DIR, 'gui/'+sickbeard.GUI_NAME),
                       'web_root': sickbeard.WEB_ROOT,
                       'log_dir': log_dir,
                       'username': sickbeard.WEB_USERNAME,

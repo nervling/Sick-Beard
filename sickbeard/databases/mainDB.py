@@ -16,6 +16,8 @@
 # You should have received a copy of the GNU General Public License
 # along with Sick Beard.  If not, see <http://www.gnu.org/licenses/>.
 
+import datetime
+
 import sickbeard
 import os.path
 
@@ -23,18 +25,18 @@ from sickbeard import db, common, helpers, logger
 from sickbeard.providers.generic import GenericProvider
 
 from sickbeard import encodingKludge as ek
-from sickbeard.name_parser.parser import NameParser, InvalidNameException
-
-MAX_DB_VERSION = 12
+from sickbeard.name_parser.parser import NameParser, InvalidNameException 
 
 
 class MainSanityCheck(db.DBSanityCheck):
+
     def check(self):
         self.fix_duplicate_shows()
         self.fix_duplicate_episodes()
         self.fix_orphan_episodes()
 
     def fix_duplicate_shows(self):
+
         sqlResults = self.connection.select("SELECT show_id, tvdb_id, COUNT(tvdb_id) as count FROM tv_shows GROUP BY tvdb_id HAVING count > 1")
 
         for cur_duplicate in sqlResults:
@@ -42,7 +44,7 @@ class MainSanityCheck(db.DBSanityCheck):
             logger.log(u"Duplicate show detected! tvdb_id: " + str(cur_duplicate["tvdb_id"]) + u" count: " + str(cur_duplicate["count"]), logger.DEBUG)
 
             cur_dupe_results = self.connection.select("SELECT show_id, tvdb_id FROM tv_shows WHERE tvdb_id = ? LIMIT ?",
-                                           [cur_duplicate["tvdb_id"], int(cur_duplicate["count"]) - 1]
+                                           [cur_duplicate["tvdb_id"], int(cur_duplicate["count"])-1]
                                            )
 
             for cur_dupe_id in cur_dupe_results:
@@ -53,14 +55,15 @@ class MainSanityCheck(db.DBSanityCheck):
             logger.log(u"No duplicate show, check passed")
 
     def fix_duplicate_episodes(self):
+
         sqlResults = self.connection.select("SELECT showid, season, episode, COUNT(showid) as count FROM tv_episodes GROUP BY showid, season, episode HAVING count > 1")
 
         for cur_duplicate in sqlResults:
 
-            logger.log(u"Duplicate episode detected! showid: " + str(cur_duplicate["showid"]) + u" season: " + str(cur_duplicate["season"]) + u" episode: " + str(cur_duplicate["episode"]) + u" count: " + str(cur_duplicate["count"]), logger.DEBUG)
+            logger.log(u"Duplicate episode detected! showid: " + str(cur_duplicate["showid"]) + u" season: "+str(cur_duplicate["season"]) + u" episode: "+str(cur_duplicate["episode"]) + u" count: " + str(cur_duplicate["count"]), logger.DEBUG)
 
             cur_dupe_results = self.connection.select("SELECT episode_id FROM tv_episodes WHERE showid = ? AND season = ? and episode = ? ORDER BY episode_id DESC LIMIT ?",
-                                           [cur_duplicate["showid"], cur_duplicate["season"], cur_duplicate["episode"], int(cur_duplicate["count"]) - 1]
+                                           [cur_duplicate["showid"], cur_duplicate["season"], cur_duplicate["episode"], int(cur_duplicate["count"])-1]
                                            )
 
             for cur_dupe_id in cur_dupe_results:
@@ -71,16 +74,16 @@ class MainSanityCheck(db.DBSanityCheck):
             logger.log(u"No duplicate episode, check passed")
 
     def fix_orphan_episodes(self):
+
         sqlResults = self.connection.select("SELECT episode_id, showid, tv_shows.tvdb_id FROM tv_episodes LEFT JOIN tv_shows ON tv_episodes.showid=tv_shows.tvdb_id WHERE tv_shows.tvdb_id is NULL")
 
         for cur_orphan in sqlResults:
             logger.log(u"Orphan episode detected! episode_id: " + str(cur_orphan["episode_id"]) + " showid: " + str(cur_orphan["showid"]), logger.DEBUG)
-            logger.log(u"Deleting orphan episode with episode_id: " + str(cur_orphan["episode_id"]))
+            logger.log(u"Deleting orphan episode with episode_id: "+str(cur_orphan["episode_id"]))
             self.connection.action("DELETE FROM tv_episodes WHERE episode_id = ?", [cur_orphan["episode_id"]])
 
         else:
             logger.log(u"No orphan episode, check passed")
-
 
 def backupDatabase(version):
     helpers.backupVersionedFile(db.dbFilename(), version)
@@ -89,7 +92,6 @@ def backupDatabase(version):
 # = Main DB Migrations =
 # ======================
 # Add new migrations at the bottom of the list; subclass the previous migration.
-
 
 class InitialSchema (db.SchemaUpgrade):
     def test(self):
@@ -105,14 +107,12 @@ class InitialSchema (db.SchemaUpgrade):
         for query in queries:
             self.connection.action(query)
 
-
 class AddTvrId (InitialSchema):
     def test(self):
         return self.hasColumn("tv_shows", "tvr_id")
 
     def execute(self):
         self.addColumn("tv_shows", "tvr_id")
-
 
 class AddTvrName (AddTvrId):
     def test(self):
@@ -121,6 +121,12 @@ class AddTvrName (AddTvrId):
     def execute(self):
         self.addColumn("tv_shows", "tvr_name", "TEXT", "")
 
+class AddImdbId (InitialSchema):
+    def test(self):
+        return self.hasColumn("tv_shows", "imdb_id")
+
+    def execute(self):
+        self.addColumn("tv_shows", "imdb_id", "TEXT", "")
 
 class AddAirdateIndex (AddTvrName):
     def test(self):
@@ -128,7 +134,6 @@ class AddAirdateIndex (AddTvrName):
 
     def execute(self):
         self.connection.action("CREATE INDEX idx_tv_episodes_showid_airdate ON tv_episodes(showid,airdate);")
-
 
 class NumericProviders (AddAirdateIndex):
     def test(self):
@@ -141,8 +146,13 @@ class NumericProviders (AddAirdateIndex):
                 4: 'eztv',
                 5: 'nzbmatrix',
                 6: 'tvnzb',
-                7: 'ezrss'}
-
+                7: 'ezrss',
+                8: 'thepiratebay',
+                9: 'dtt',
+                10: 'torrentleech',
+                11: 'kat',
+             }
+                
     def execute(self):
         self.connection.action("ALTER TABLE history RENAME TO history_old")
         self.connection.action("CREATE TABLE history (action NUMERIC, date NUMERIC, showid NUMERIC, season NUMERIC, episode NUMERIC, quality NUMERIC, resource TEXT, provider TEXT);")
@@ -162,12 +172,12 @@ class NumericProviders (AddAirdateIndex):
             args = [curResult["action"], curResult["date"], curResult["showid"], curResult["season"], curResult["episode"], curResult["quality"], curResult["resource"], provider]
             self.connection.action(sql, args)
 
-
 class NewQualitySettings (NumericProviders):
     def test(self):
         return self.hasTable("db_version")
 
     def execute(self):
+
         backupDatabase(0)
 
         # old stuff that's been removed from common but we need it to upgrade
@@ -234,6 +244,7 @@ class NewQualitySettings (NumericProviders):
         if didUpdate:
             os.remove(db.dbFilename(suffix='v0'))
 
+
         ### Update show qualities
         toUpdate = self.connection.select("SELECT * FROM tv_shows")
         for curUpdate in toUpdate:
@@ -250,11 +261,12 @@ class NewQualitySettings (NumericProviders):
             elif int(curUpdate["quality"]) == BEST:
                 newQuality = common.BEST
             else:
-                logger.log(u"Unknown show quality: " + str(curUpdate["quality"]), logger.WARNING)
+                logger.log(u"Unknown show quality: "+str(curUpdate["quality"]), logger.WARNING)
                 newQuality = None
 
             if newQuality:
                 self.connection.action("UPDATE tv_shows SET quality = ? WHERE show_id = ?", [newQuality, curUpdate["show_id"]])
+
 
         ### Update history
         toUpdate = self.connection.select("SELECT * FROM history")
@@ -285,7 +297,6 @@ class NewQualitySettings (NumericProviders):
         self.connection.action("CREATE TABLE db_version (db_version INTEGER);")
         self.connection.action("INSERT INTO db_version (db_version) VALUES (?)", [1])
 
-
 class DropOldHistoryTable(NewQualitySettings):
     def test(self):
         return self.checkDBVersion() >= 2
@@ -294,12 +305,12 @@ class DropOldHistoryTable(NewQualitySettings):
         self.connection.action("DROP TABLE history_old")
         self.incDBVersion()
 
-
 class UpgradeHistoryForGenericProviders(DropOldHistoryTable):
     def test(self):
         return self.checkDBVersion() >= 3
 
     def execute(self):
+
         providerMap = {'NZBs': 'NZBs.org',
                        'BinReq': 'Bin-Req',
                        'NZBsRUS': '''NZBs'R'US''',
@@ -310,7 +321,6 @@ class UpgradeHistoryForGenericProviders(DropOldHistoryTable):
 
         self.incDBVersion()
 
-
 class AddAirByDateOption(UpgradeHistoryForGenericProviders):
     def test(self):
         return self.checkDBVersion() >= 4
@@ -319,26 +329,23 @@ class AddAirByDateOption(UpgradeHistoryForGenericProviders):
         self.connection.action("ALTER TABLE tv_shows ADD air_by_date NUMERIC")
         self.incDBVersion()
 
-
 class ChangeSabConfigFromIpToHost(AddAirByDateOption):
     def test(self):
         return self.checkDBVersion() >= 5
-
+    
     def execute(self):
         sickbeard.SAB_HOST = 'http://' + sickbeard.SAB_HOST + '/sabnzbd/'
         self.incDBVersion()
 
-
 class FixSabHostURL(ChangeSabConfigFromIpToHost):
     def test(self):
         return self.checkDBVersion() >= 6
-
+    
     def execute(self):
         if sickbeard.SAB_HOST.endswith('/sabnzbd/'):
-            sickbeard.SAB_HOST = sickbeard.SAB_HOST.replace('/sabnzbd/', '/')
+            sickbeard.SAB_HOST = sickbeard.SAB_HOST.replace('/sabnzbd/','/')
         sickbeard.save_config()
         self.incDBVersion()
-
 
 class AddLang (FixSabHostURL):
     def test(self):
@@ -347,14 +354,13 @@ class AddLang (FixSabHostURL):
     def execute(self):
         self.addColumn("tv_shows", "lang", "TEXT", "en")
 
-
 class PopulateRootDirs (AddLang):
     def test(self):
         return self.checkDBVersion() >= 7
-
+    
     def execute(self):
         dir_results = self.connection.select("SELECT location FROM tv_shows")
-
+        
         dir_counts = {}
         for cur_dir in dir_results:
             cur_root_dir = ek.ek(os.path.dirname, ek.ek(os.path.normpath, cur_dir["location"]))
@@ -362,30 +368,31 @@ class PopulateRootDirs (AddLang):
                 dir_counts[cur_root_dir] = 1
             else:
                 dir_counts[cur_root_dir] += 1
-
-        logger.log(u"Dir counts: " + str(dir_counts), logger.DEBUG)
-
+        
+        logger.log(u"Dir counts: "+str(dir_counts), logger.DEBUG)
+        
         if not dir_counts:
             self.incDBVersion()
             return
-
+        
         default_root_dir = dir_counts.values().index(max(dir_counts.values()))
-
-        new_root_dirs = str(default_root_dir) + '|' + '|'.join(dir_counts.keys())
-        logger.log(u"Setting ROOT_DIRS to: " + new_root_dirs, logger.DEBUG)
-
+        
+        new_root_dirs = str(default_root_dir)+'|'+'|'.join(dir_counts.keys())
+        logger.log(u"Setting ROOT_DIRS to: "+new_root_dirs, logger.DEBUG)
+        
         sickbeard.ROOT_DIRS = new_root_dirs
-
+        
         sickbeard.save_config()
-
+        
         self.incDBVersion()
-
-
+        
 class SetNzbTorrentSettings(PopulateRootDirs):
+
     def test(self):
         return self.checkDBVersion() >= 8
-
+    
     def execute(self):
+
         use_torrents = False
         use_nzbs = False
 
@@ -393,41 +400,43 @@ class SetNzbTorrentSettings(PopulateRootDirs):
             if cur_provider.isEnabled():
                 if cur_provider.providerType == GenericProvider.NZB:
                     use_nzbs = True
-                    logger.log(u"Provider " + cur_provider.name + " is enabled, enabling NZBs in the upgrade")
+                    logger.log(u"Provider "+cur_provider.name+" is enabled, enabling NZBs in the upgrade")
                     break
                 elif cur_provider.providerType == GenericProvider.TORRENT:
                     use_torrents = True
-                    logger.log(u"Provider " + cur_provider.name + " is enabled, enabling Torrents in the upgrade")
+                    logger.log(u"Provider "+cur_provider.name+" is enabled, enabling Torrents in the upgrade")
                     break
 
         sickbeard.USE_TORRENTS = use_torrents
         sickbeard.USE_NZBS = use_nzbs
-
+        
         sickbeard.save_config()
-
+        
         self.incDBVersion()
 
-
 class FixAirByDateSetting(SetNzbTorrentSettings):
+    
     def test(self):
         return self.checkDBVersion() >= 9
 
     def execute(self):
+        
         shows = self.connection.select("SELECT * FROM tv_shows")
-
+        
         for cur_show in shows:
             if cur_show["genre"] and "talk show" in cur_show["genre"].lower():
                 self.connection.action("UPDATE tv_shows SET air_by_date = ? WHERE tvdb_id = ?", [1, cur_show["tvdb_id"]])
-
+        
         self.incDBVersion()
 
-
 class AddSizeAndSceneNameFields(FixAirByDateSetting):
+
     def test(self):
         return self.checkDBVersion() >= 10
-
+    
     def execute(self):
-        backupDatabase(10)
+
+        backupDatabase(11)
 
         if not self.hasColumn("tv_episodes", "file_size"):
             self.addColumn("tv_episodes", "file_size")
@@ -436,12 +445,12 @@ class AddSizeAndSceneNameFields(FixAirByDateSetting):
             self.addColumn("tv_episodes", "release_name", "TEXT", "")
 
         ep_results = self.connection.select("SELECT episode_id, location, file_size FROM tv_episodes")
-
+        
         logger.log(u"Adding file size to all episodes in DB, please be patient")
         for cur_ep in ep_results:
             if not cur_ep["location"]:
                 continue
-
+            
             # if there is no size yet then populate it for us
             if (not cur_ep["file_size"] or not int(cur_ep["file_size"])) and ek.ek(os.path.isfile, cur_ep["location"]):
                 cur_size = ek.ek(os.path.getsize, cur_ep["location"])
@@ -449,19 +458,19 @@ class AddSizeAndSceneNameFields(FixAirByDateSetting):
 
         # check each snatch to see if we can use it to get a release name from
         history_results = self.connection.select("SELECT * FROM history WHERE provider != -1 ORDER BY date ASC")
-
+        
         logger.log(u"Adding release name to all episodes still in history")
         for cur_result in history_results:
             # find the associated download, if there isn't one then ignore it
             download_results = self.connection.select("SELECT resource FROM history WHERE provider = -1 AND showid = ? AND season = ? AND episode = ? AND date > ?",
                                                     [cur_result["showid"], cur_result["season"], cur_result["episode"], cur_result["date"]])
             if not download_results:
-                logger.log(u"Found a snatch in the history for " + cur_result["resource"] + " but couldn't find the associated download, skipping it", logger.DEBUG)
+                logger.log(u"Found a snatch in the history for "+cur_result["resource"]+" but couldn't find the associated download, skipping it", logger.DEBUG)
                 continue
 
             nzb_name = cur_result["resource"]
             file_name = ek.ek(os.path.basename, download_results[0]["resource"])
-
+            
             # take the extension off the filename, it's not needed
             if '.' in file_name:
                 file_name = file_name.rpartition('.')[0]
@@ -470,20 +479,20 @@ class AddSizeAndSceneNameFields(FixAirByDateSetting):
             ep_results = self.connection.select("SELECT episode_id, status FROM tv_episodes WHERE showid = ? AND season = ? AND episode = ? AND location != ''",
                                                 [cur_result["showid"], cur_result["season"], cur_result["episode"]])
             if not ep_results:
-                logger.log(u"The episode " + nzb_name + " was found in history but doesn't exist on disk anymore, skipping", logger.DEBUG)
+                logger.log(u"The episode "+nzb_name+" was found in history but doesn't exist on disk anymore, skipping", logger.DEBUG)
                 continue
 
-            # get the status/quality of the existing ep and make sure it's what we expect
+            # get the status/quality of the existing ep and make sure it's what we expect 
             ep_status, ep_quality = common.Quality.splitCompositeStatus(int(ep_results[0]["status"]))
             if ep_status != common.DOWNLOADED:
                 continue
-
+            
             if ep_quality != int(cur_result["quality"]):
-                continue
+                continue 
 
             # make sure this is actually a real release name and not a season pack or something
             for cur_name in (nzb_name, file_name):
-                logger.log(u"Checking if " + cur_name + " is actually a good release name", logger.DEBUG)
+                logger.log(u"Checking if "+cur_name+" is actually a good release name", logger.DEBUG)
                 try:
                     np = NameParser(False)
                     parse_result = np.parse(cur_name)
@@ -497,43 +506,44 @@ class AddSizeAndSceneNameFields(FixAirByDateSetting):
 
         # check each snatch to see if we can use it to get a release name from
         empty_results = self.connection.select("SELECT episode_id, location FROM tv_episodes WHERE release_name = ''")
-
+        
         logger.log(u"Adding release name to all episodes with obvious scene filenames")
         for cur_result in empty_results:
-
+            
             ep_file_name = ek.ek(os.path.basename, cur_result["location"])
             ep_file_name = os.path.splitext(ep_file_name)[0]
-
+            
             # only want to find real scene names here so anything with a space in it is out
             if ' ' in ep_file_name:
                 continue
-
+            
             try:
                 np = NameParser(False)
                 parse_result = np.parse(ep_file_name)
             except InvalidNameException:
                 continue
-
+        
             if not parse_result.release_group:
                 continue
-
-            logger.log(u"Name " + ep_file_name + " gave release group of " + parse_result.release_group + ", seems valid", logger.DEBUG)
+            
+            logger.log(u"Name "+ep_file_name+" gave release group of "+parse_result.release_group+", seems valid", logger.DEBUG)
             self.connection.action("UPDATE tv_episodes SET release_name = ? WHERE episode_id = ?", [ep_file_name, cur_result["episode_id"]])
 
         self.incDBVersion()
 
-
 class RenameSeasonFolders(AddSizeAndSceneNameFields):
+
     def test(self):
         return self.checkDBVersion() >= 11
-
+    
     def execute(self):
+        
         # rename the column
         self.connection.action("ALTER TABLE tv_shows RENAME TO tmp_tv_shows")
         self.connection.action("CREATE TABLE tv_shows (show_id INTEGER PRIMARY KEY, location TEXT, show_name TEXT, tvdb_id NUMERIC, network TEXT, genre TEXT, runtime NUMERIC, quality NUMERIC, airs TEXT, status TEXT, flatten_folders NUMERIC, paused NUMERIC, startyear NUMERIC, tvr_id NUMERIC, tvr_name TEXT, air_by_date NUMERIC, lang TEXT)")
         sql = "INSERT INTO tv_shows(show_id, location, show_name, tvdb_id, network, genre, runtime, quality, airs, status, flatten_folders, paused, startyear, tvr_id, tvr_name, air_by_date, lang) SELECT show_id, location, show_name, tvdb_id, network, genre, runtime, quality, airs, status, seasonfolders, paused, startyear, tvr_id, tvr_name, air_by_date, lang FROM tmp_tv_shows"
         self.connection.action(sql)
-
+        
         # flip the values to be opposite of what they were before
         self.connection.action("UPDATE tv_shows SET flatten_folders = 2 WHERE flatten_folders = 1")
         self.connection.action("UPDATE tv_shows SET flatten_folders = 1 WHERE flatten_folders = 0")
@@ -542,8 +552,28 @@ class RenameSeasonFolders(AddSizeAndSceneNameFields):
 
         self.incDBVersion()
 
+class AddSubtitlesSupport(RenameSeasonFolders):    
+    def test(self):
+        return self.checkDBVersion() >= 12
 
-class Add1080pAndRawHDQualities(RenameSeasonFolders):
+    def execute(self):
+        
+        self.addColumn("tv_shows", "subtitles")
+        self.addColumn("tv_episodes", "subtitles", "TEXT", "")
+        self.addColumn("tv_episodes", "subtitles_searchcount")
+        self.addColumn("tv_episodes", "subtitles_lastsearch", "TIMESTAMP", str(datetime.datetime.min))
+        self.incDBVersion()
+   
+class AddIMDbInfo(RenameSeasonFolders):    
+    def test(self):
+        return self.checkDBVersion() >= 13
+
+    def execute(self):
+        
+        self.connection.action("CREATE TABLE imdb_info (tvdb_id INTEGER PRIMARY KEY, imdb_id TEXT, title TEXT, year NUMERIC, akas TEXT, runtimes NUMERIC, genres TEXT, countries TEXT, country_codes TEXT, certificates TEXT, rating TEXT, votes INTEGER, last_update NUMERIC)")
+        self.incDBVersion()
+        
+class Add1080pAndRawHDQualities(AddIMDbInfo):
     """Add support for 1080p related qualities along with RawHD
 
     Quick overview of what the upgrade needs to do:
@@ -560,7 +590,7 @@ class Add1080pAndRawHDQualities(RenameSeasonFolders):
     """
 
     def test(self):
-        return self.checkDBVersion() >= 12
+        return self.checkDBVersion() >= 14
 
     def _update_status(self, old_status):
         (status, quality) = common.Quality.splitCompositeStatus(old_status)
@@ -661,6 +691,26 @@ class Add1080pAndRawHDQualities(RenameSeasonFolders):
             ql.append(["UPDATE history SET quality = ? WHERE showid = ? AND date = ?", [self._update_quality(cur_entry["quality"]), cur_entry["showid"], cur_entry["date"]]])
         self.connection.mass_action(ql)
 
+        self.incDBVersion()
+
+        # cleanup and reduce db if any previous data was removed
+        logger.log(u"Performing a vacuum on the database.", logger.DEBUG)
+        self.connection.action("VACUUM")
+                
+class AddProperNamingSupport(Add1080pAndRawHDQualities):    
+    def test(self):
+        return self.checkDBVersion() >= 15
+
+    def execute(self):
+        self.addColumn("tv_episodes", "is_proper")
+        self.incDBVersion()
+
+class AddEmailSubscriptionTable(AddProperNamingSupport):
+    def test(self):
+        return self.hasColumn("tv_shows", "notify_list")
+    
+    def execute(self):
+        self.addColumn('tv_shows', 'notify_list', 'TEXT', None)
         self.incDBVersion()
 
         # cleanup and reduce db if any previous data was removed

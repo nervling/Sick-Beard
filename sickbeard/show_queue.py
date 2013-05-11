@@ -23,6 +23,7 @@ import traceback
 import sickbeard
 
 from lib.tvdb_api import tvdb_exceptions, tvdb_api
+from lib.imdb import _exceptions as imdb_exceptions
 
 from sickbeard.common import SKIPPED, WANTED
 
@@ -32,12 +33,12 @@ from sickbeard import generic_queue
 from sickbeard import name_cache
 from sickbeard.exceptions import ex
 
-
 class ShowQueue(generic_queue.GenericQueue):
 
     def __init__(self):
         generic_queue.GenericQueue.__init__(self)
         self.queue_name = "SHOWQUEUE"
+
 
     def _isInQueue(self, show, actions):
         return show in [x.show for x in self.queue if x.action_id in actions]
@@ -54,6 +55,9 @@ class ShowQueue(generic_queue.GenericQueue):
 
     def isInRenameQueue(self, show):
         return self._isInQueue(show, (ShowQueueActions.RENAME,))
+    
+    def isInSubtitleQueue(self, show):
+        return self._isInQueue(show, (ShowQueueActions.SUBTITLE,))
 
     def isBeingAdded(self, show):
         return self._isBeingSomethinged(show, (ShowQueueActions.ADD,))
@@ -66,6 +70,9 @@ class ShowQueue(generic_queue.GenericQueue):
 
     def isBeingRenamed(self, show):
         return self._isBeingSomethinged(show, (ShowQueueActions.RENAME,))
+    
+    def isBeingSubtitled(self, show):
+        return self._isBeingSomethinged(show, (ShowQueueActions.SUBTITLE,))
 
     def _getLoadingShowList(self):
         return [x for x in self.queue + [self.currentItem] if x != None and x.isLoading]
@@ -102,7 +109,7 @@ class ShowQueue(generic_queue.GenericQueue):
             return
 
         queueItemObj = QueueItemRefresh(show)
-
+        
         self.add_item(queueItemObj)
 
         return queueItemObj
@@ -114,29 +121,37 @@ class ShowQueue(generic_queue.GenericQueue):
         self.add_item(queueItemObj)
 
         return queueItemObj
+    
+    def downloadSubtitles(self, show, force=False):
 
-    def addShow(self, tvdb_id, showDir, default_status=None, quality=None, flatten_folders=None, lang="en"):
-        queueItemObj = QueueItemAdd(tvdb_id, showDir, default_status, quality, flatten_folders, lang)
+        queueItemObj = QueueItemSubtitle(show)
 
         self.add_item(queueItemObj)
 
         return queueItemObj
 
+    def addShow(self, tvdb_id, showDir, default_status=None, quality=None, flatten_folders=None, subtitles=None, lang="en"):
+        queueItemObj = QueueItemAdd(tvdb_id, showDir, default_status, quality, flatten_folders, lang, subtitles)
+        
+        self.add_item(queueItemObj)
+
+        return queueItemObj
 
 class ShowQueueActions:
-    REFRESH = 1
-    ADD = 2
-    UPDATE = 3
-    FORCEUPDATE = 4
-    RENAME = 5
-
+    REFRESH=1
+    ADD=2
+    UPDATE=3
+    FORCEUPDATE=4
+    RENAME=5
+    SUBTITLE=6
+    
     names = {REFRESH: 'Refresh',
                     ADD: 'Add',
                     UPDATE: 'Update',
                     FORCEUPDATE: 'Force Update',
                     RENAME: 'Rename',
+                    SUBTITLE: 'Subtitle',
                     }
-
 
 class ShowQueueItem(generic_queue.QueueItem):
     """
@@ -147,11 +162,12 @@ class ShowQueueItem(generic_queue.QueueItem):
     - show being refreshed
     - show being updated
     - show being force updated
+    - show being subtitled
     """
     def __init__(self, action_id, show):
         generic_queue.QueueItem.__init__(self, ShowQueueActions.names[action_id], action_id)
         self.show = show
-
+    
     def isInQueue(self):
         return self in sickbeard.showQueueScheduler.action.queue + [sickbeard.showQueueScheduler.action.currentItem] #@UndefinedVariable
 
@@ -167,7 +183,7 @@ class ShowQueueItem(generic_queue.QueueItem):
 
 
 class QueueItemAdd(ShowQueueItem):
-    def __init__(self, tvdb_id, showDir, default_status, quality, flatten_folders, lang):
+    def __init__(self, tvdb_id, showDir, default_status, quality, flatten_folders, lang, subtitles):
 
         self.tvdb_id = tvdb_id
         self.showDir = showDir
@@ -175,12 +191,13 @@ class QueueItemAdd(ShowQueueItem):
         self.quality = quality
         self.flatten_folders = flatten_folders
         self.lang = lang
+        self.subtitles = subtitles
 
         self.show = None
 
         # this will initialize self.show to None
         ShowQueueItem.__init__(self, ShowQueueActions.ADD, self.show)
-
+        
     def _getName(self):
         """
         Returns the show name if there is a show object created, if not returns
@@ -215,9 +232,9 @@ class QueueItemAdd(ShowQueueItem):
                 ltvdb_api_parms = sickbeard.TVDB_API_PARMS.copy()
                 if self.lang:
                     ltvdb_api_parms['language'] = self.lang
-
+        
                 logger.log(u"TVDB: " + repr(ltvdb_api_parms))
-
+        
                 t = tvdb_api.Tvdb(**ltvdb_api_parms)
                 s = t[self.tvdb_id]
 
@@ -249,10 +266,11 @@ class QueueItemAdd(ShowQueueItem):
 
             # set up initial values
             self.show.location = self.showDir
+            self.show.subtitles = self.subtitles if self.subtitles != None else sickbeard.SUBTITLES_DEFAULT
             self.show.quality = self.quality if self.quality else sickbeard.QUALITY_DEFAULT
             self.show.flatten_folders = self.flatten_folders if self.flatten_folders != None else sickbeard.FLATTEN_FOLDERS_DEFAULT
-            self.show.paused = 0
-
+            self.show.paused = False
+            
             # be smartish about this
             if self.show.genre and "talk show" in self.show.genre.lower():
                 self.show.air_by_date = 1
@@ -273,10 +291,22 @@ class QueueItemAdd(ShowQueueItem):
             return
 
         except Exception, e:
-            logger.log(u"Error trying to add show: " + ex(e), logger.ERROR)
+            logger.log(u"Error trying to add show: "+ex(e), logger.ERROR)
             logger.log(traceback.format_exc(), logger.DEBUG)
             self._finishEarly()
             raise
+
+        logger.log(u"Retrieving show info from IMDb", logger.DEBUG)
+        try:
+            self.show.loadIMDbInfo()
+        except imdb_exceptions.IMDbError, e:
+            #todo Insert UI notification
+            logger.log(u" Something wrong on IMDb api: " + ex(e), logger.WARNING)
+        except imdb_exceptions.IMDbParserError, e:
+            logger.log(u" IMDb_api parser error: " + ex(e), logger.WARNING)
+        except Exception, e:
+            logger.log(u"Error loading IMDb info: " + ex(e), logger.ERROR)
+            logger.log(traceback.format_exc(), logger.DEBUG)
 
         # add it to the show list
         sickbeard.showList.append(self.show)
@@ -293,7 +323,7 @@ class QueueItemAdd(ShowQueueItem):
 
             self.show.writeMetadata()
             self.show.populateCache()
-
+            
         except Exception, e:
             logger.log(u"Error with TVDB, not creating episode list: " + ex(e), logger.ERROR)
             logger.log(traceback.format_exc(), logger.DEBUG)
@@ -316,6 +346,9 @@ class QueueItemAdd(ShowQueueItem):
             sickbeard.backlogSearchScheduler.action.searchBacklog([self.show]) #@UndefinedVariable
 
         self.show.flushEpisodes()
+
+        # if there are specific episodes that need to be added by trakt
+        sickbeard.traktWatchListCheckerSchedular.action.manageNewShow(self.show)
 
         self.finish()
 
@@ -386,6 +419,20 @@ class QueueItemRename(ShowQueueItem):
 
         self.inProgress = False
 
+class QueueItemSubtitle(ShowQueueItem):
+    def __init__(self, show=None):
+        ShowQueueItem.__init__(self, ShowQueueActions.SUBTITLE, show)
+
+    def execute(self):
+
+        ShowQueueItem.execute(self)
+
+        logger.log(u"Downloading subtitles for "+self.show.name)
+
+        self.show.downloadSubtitles()
+
+        self.inProgress = False
+
 
 class QueueItemUpdate(ShowQueueItem):
     def __init__(self, show=None):
@@ -405,6 +452,23 @@ class QueueItemUpdate(ShowQueueItem):
             logger.log(u"Unable to contact TVDB, aborting: " + ex(e), logger.WARNING)
             return
 
+        logger.log(u"Retrieving show info from IMDb", logger.DEBUG)
+        try:
+            self.show.loadIMDbInfo()
+        except imdb_exceptions.IMDbError, e:
+            logger.log(u" Something wrong on IMDb api: " + ex(e), logger.WARNING)
+        except imdb_exceptions.IMDbParserError, e:
+            logger.log(u" IMDb api parser error: " + ex(e), logger.WARNING)
+        except Exception, e:
+            logger.log(u"Error loading IMDb info: " + ex(e), logger.ERROR)
+            logger.log(traceback.format_exc(), logger.DEBUG)
+        
+        try:
+            self.show.saveToDB()
+        except Exception, e:
+            logger.log(u"Error saving the episode to the database: " + ex(e), logger.ERROR)
+            logger.log(traceback.format_exc(), logger.DEBUG)
+        
         # get episode list from DB
         logger.log(u"Loading all episodes from the database", logger.DEBUG)
         DBEpList = self.show.loadEpisodesFromDB()
@@ -447,7 +511,6 @@ class QueueItemUpdate(ShowQueueItem):
                 self.show.setTVRID()
 
         sickbeard.showQueueScheduler.action.refreshShow(self.show, True) #@UndefinedVariable
-
 
 class QueueItemForceUpdate(QueueItemUpdate):
     def __init__(self, show=None):

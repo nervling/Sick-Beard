@@ -307,7 +307,7 @@ class TVCache():
         curTimestamp = int(time.mktime(datetime.datetime.today().timetuple()))
 
         if not quality:
-            quality = Quality.nameQuality(name)
+            quality = Quality.sceneQuality(name)
 
         myDB.action("INSERT INTO "+self.providerID+" (name, season, episodes, tvrid, tvdbid, url, time, quality) VALUES (?,?,?,?,?,?,?,?)",
                     [name, season, episodeText, tvrage_id, tvdb_id, url, curTimestamp, quality])
@@ -385,6 +385,9 @@ class TVCache():
                 result.url = url
                 result.name = title
                 result.quality = curQuality
+                result.content = self.provider.getURL(url) \
+                            if self.provider.providerType == sickbeard.providers.generic.GenericProvider.TORRENT \
+                            and not url.startswith('magnet') else None
 
                 # add it to the list
                 if epObj not in neededEps:

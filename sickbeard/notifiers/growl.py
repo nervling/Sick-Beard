@@ -39,6 +39,10 @@ class GrowlNotifier:
         if sickbeard.GROWL_NOTIFY_ONDOWNLOAD:
             self._sendGrowl(common.notifyStrings[common.NOTIFY_DOWNLOAD], ep_name)
 
+    def notify_subtitle_download(self, ep_name, lang):
+        if sickbeard.GROWL_NOTIFY_ONSUBTITLEDOWNLOAD:
+            self._sendGrowl(common.notifyStrings[common.NOTIFY_SUBTITLE_DOWNLOAD], ep_name + ": " + lang)
+
     def _send_growl(self, options,message=None):
                 
         #Send Notification
@@ -123,7 +127,13 @@ class GrowlNotifier:
             opts['port'] = pc[1]
             logger.log(u"Sending growl to "+opts['host']+":"+str(opts['port'])+": "+message)
             try:
-                return self._send_growl(opts, message)
+                if self._send_growl(opts, message):
+                    return True
+                else: 
+                    if self._sendRegistration(host, password, 'Sickbeard'):
+                        return self._send_growl(opts, message)
+                    else:
+                        return False
             except socket.error, e:
                 logger.log(u"Unable to send growl to "+opts['host']+":"+str(opts['port'])+": "+ex(e))
                 return False

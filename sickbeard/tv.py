@@ -23,6 +23,7 @@ import datetime
 import threading
 import re
 import glob
+import traceback
 
 import sickbeard
 
@@ -30,20 +31,28 @@ import xml.etree.cElementTree as etree
 
 from name_parser.parser import NameParser, InvalidNameException
 
+from lib import subliminal
+
 from lib.tvdb_api import tvdb_api, tvdb_exceptions
+
+from lib.imdb import imdb
 
 from sickbeard import db
 from sickbeard import helpers, exceptions, logger
 from sickbeard.exceptions import ex
 from sickbeard import tvrage
 from sickbeard import image_cache
+from sickbeard import notifiers
 from sickbeard import postProcessor
+from sickbeard import subtitles
+from sickbeard import history
 
 from sickbeard import encodingKludge as ek
 
 from common import Quality, Overview
 from common import DOWNLOADED, SNATCHED, SNATCHED_PROPER, ARCHIVED, IGNORED, UNAIRED, WANTED, SKIPPED, UNKNOWN
 from common import NAMING_DUPLICATE, NAMING_EXTEND, NAMING_LIMITED_EXTEND, NAMING_SEPARATED_REPEAT, NAMING_LIMITED_EXTEND_E_PREFIXED
+
 
 class TVShow(object):
 
@@ -55,9 +64,11 @@ class TVShow(object):
         self.name = ""
         self.tvrid = 0
         self.tvrname = ""
+        self.imdbid = "" 
         self.network = ""
         self.genre = ""
         self.runtime = 0
+        self.imdb_info = {}
         self.quality = int(sickbeard.QUALITY_DEFAULT)
         self.flatten_folders = int(sickbeard.FLATTEN_FOLDERS_DEFAULT)
 
@@ -66,6 +77,7 @@ class TVShow(object):
         self.startyear = 0
         self.paused = 0
         self.air_by_date = 0
+        self.subtitles = int(sickbeard.SUBTITLES_DEFAULT if sickbeard.SUBTITLES_DEFAULT else 0)
         self.lang = lang
 
         self.lock = threading.Lock()
@@ -268,8 +280,14 @@ class TVShow(object):
 
             # store the reference in the show
             if curEpisode != None:
+                if self.subtitles:
+                    try:
+                        curEpisode.refreshSubtitles()
+                    except:
+                        logger.log(str(self.tvdbid) + ": Could not refresh subtitles", logger.ERROR)
+                        logger.log(traceback.format_exc(), logger.DEBUG)
                 curEpisode.saveToDB()
-
+                
 
     def loadEpisodesFromDB(self):
 
@@ -601,6 +619,12 @@ class TVShow(object):
             self.air_by_date = sqlResults[0]["air_by_date"]
             if self.air_by_date == None:
                 self.air_by_date = 0
+            
+            self.subtitles = sqlResults[0]["subtitles"]
+            if self.subtitles:
+                self.subtitles = 1
+            else:
+                self.subtitles = 0    
 
             self.quality = int(sqlResults[0]["quality"])
             self.flatten_folders = int(sqlResults[0]["flatten_folders"])
@@ -614,6 +638,17 @@ class TVShow(object):
             if self.lang == "":
                 self.lang = sqlResults[0]["lang"]
 
+            if self.imdbid == "":
+                self.imdbid = sqlResults[0]["imdb_id"]                    
+
+        #Get IMDb_info from database
+        sqlResults = myDB.select("SELECT * FROM imdb_info WHERE tvdb_id = ?", [self.tvdbid])
+
+        if len(sqlResults) == 0:
+            logger.log(str(self.tvdbid) + ": Unable to find IMDb show info in the database")
+            return
+        else:
+            self.imdb_info = dict(zip(sqlResults[0].keys(), sqlResults[0]))
 
     def loadFromTVDB(self, cache=True, tvapi=None, cachedSeason=None):
 
@@ -641,6 +676,8 @@ class TVShow(object):
 
         self.genre = myEp['genre']
         self.network = myEp['network']
+        self.runtime = myEp['runtime']
+        self.imdbid = myEp['imdb_id']
 
         if myEp["airs_dayofweek"] != None and myEp["airs_time"] != None:
             self.airs = myEp["airs_dayofweek"] + " " + myEp["airs_time"]
@@ -657,9 +694,76 @@ class TVShow(object):
         if self.status == None:
             self.status = ""
 
-        self.saveToDB()
+#        self.saveToDB()
 
+    def loadIMDbInfo(self, imdbapi=None):
 
+        imdb_info = {'imdb_id' : self.imdbid,
+                     'title' : '',
+                     'year' : '',
+                     'akas' : [],
+                     'runtimes' : '', 
+                     'genres' : [],
+                     'countries' : '',
+                     'country codes' : '',
+                     'certificates' : [],
+                     'rating' : '',
+                     'votes': '',
+                     'last_update': ''
+                     }
+        
+        if self.imdbid:
+        
+            logger.log(str(self.tvdbid) + ": Loading show info from IMDb")
+    
+            i = imdb.IMDb()
+            imdbTv = i.get_movie(str(self.imdbid[2:]))
+            
+            for key in filter(lambda x: x in imdbTv.keys(), imdb_info.keys()):
+                # Store only the first value for string type
+                if type(imdb_info[key]) == type('') and type(imdbTv.get(key)) == type([]):
+                    imdb_info[key] = imdbTv.get(key)[0]
+                else:
+                    imdb_info[key] = imdbTv.get(key)
+            
+            #Filter only the value
+            if imdb_info['runtimes']:   
+                imdb_info['runtimes'] = re.search('\d+',imdb_info['runtimes']).group(0)   
+            else:
+                imdb_info['runtimes'] = self.runtime    
+    
+            if imdb_info['akas']:
+                imdb_info['akas'] = '|'.join(imdb_info['akas'])
+            else:
+                imdb_info['akas'] = ''    
+            
+            #Join all genres in a string
+            if imdb_info['genres']:
+                imdb_info['genres'] = '|'.join(imdb_info['genres'])
+            else:
+                imdb_info['genres'] = ''    
+                
+            #Get only the production country certificate if any 
+            if imdb_info['certificates'] and imdb_info['countries']:
+                dct = {}
+                try:
+                    for item in imdb_info['certificates']:
+                        dct[item.split(':')[0]] = item.split(':')[1]
+        
+                    imdb_info['certificates'] = dct[imdb_info['countries']]
+                except:
+                    imdb_info['certificates'] = ''    
+    
+            else:
+                imdb_info['certificates'] = ''       
+            
+            imdb_info['last_update'] = datetime.date.today().toordinal()
+            
+            #Rename dict keys without spaces for DB upsert
+            self.imdb_info = dict((k.replace(' ', '_'),f(v) if hasattr(v,'keys') else v) for k,v in imdb_info.items())
+    
+            logger.log(str(self.tvdbid) + ": Obtained info from IMDb ->" +  str(self.imdb_info), logger.DEBUG)
+        
     def loadNFO (self):
 
         if not os.path.isdir(self._location):
@@ -747,7 +851,8 @@ class TVShow(object):
         myDB = db.DBConnection()
         myDB.action("DELETE FROM tv_episodes WHERE showid = ?", [self.tvdbid])
         myDB.action("DELETE FROM tv_shows WHERE tvdb_id = ?", [self.tvdbid])
-
+        myDB.action("DELETE FROM imdb_info WHERE tvdb_id = ?", [self.tvdbid])
+        
         # remove self from show list
         sickbeard.showList = [x for x in sickbeard.showList if x.tvdbid != self.tvdbid]
         
@@ -797,14 +902,53 @@ class TVShow(object):
                     if curEp.location and curEp.status in Quality.DOWNLOADED:
                         logger.log(str(self.tvdbid) + ": Location for " + str(season) + "x" + str(episode) + " doesn't exist, removing it and changing our status to IGNORED", logger.DEBUG)
                         curEp.status = IGNORED
+                        curEp.subtitles = list()
+                        curEp.subtitles_searchcount = 0
+                        curEp.subtitles_lastsearch = str(datetime.datetime.min)
                     curEp.location = ''
                     curEp.hasnfo = False
                     curEp.hastbn = False
                     curEp.release_name = ''
                     curEp.saveToDB()
 
-    def saveToDB(self):
 
+    def downloadSubtitles(self, force=False):
+        #TODO: Add support for force option
+        if not ek.ek(os.path.isdir, self._location):
+            logger.log(str(self.tvdbid) + ": Show dir doesn't exist, can't download subtitles", logger.DEBUG)
+            return
+        logger.log(str(self.tvdbid) + ": Downloading subtitles", logger.DEBUG)
+        
+        try:
+            episodes = db.DBConnection().select("SELECT location FROM tv_episodes WHERE showid = ? AND location NOT LIKE '' ORDER BY season DESC, episode DESC", [self.tvdbid])
+            for episodeLoc in episodes:
+                episode = self.makeEpFromFile(episodeLoc['location']);
+                subtitles = episode.downloadSubtitles(force=force)
+        
+                if sickbeard.SUBTITLES_DIR:
+                    for video in subtitles:
+                        subs_new_path = ek.ek(os.path.join, os.path.dirname(video.path), sickbeard.SUBTITLES_DIR)
+                        dir_exists = helpers.makeDir(subs_new_path)
+                        if not dir_exists:
+                            logger.log(u"Unable to create subtitles folder "+subs_new_path, logger.ERROR)
+                        else:
+                            helpers.chmodAsParent(subs_new_path)
+                        
+                        for subtitle in subtitles.get(video):
+                            new_file_path = ek.ek(os.path.join, subs_new_path, os.path.basename(subtitle.path))
+                            helpers.moveFile(subtitle.path, new_file_path)
+                            helpers.chmodAsParent(new_file_path)
+                else:
+                    for video in subtitles:
+                        for subtitle in subtitles.get(video):
+                            helpers.chmodAsParent(subtitle.path)
+                
+        except Exception as e:
+            logger.log("Error occurred when downloading subtitles: " + str(e), logger.DEBUG)
+            return
+
+
+    def saveToDB(self):
         logger.log(str(self.tvdbid) + ": Saving show info to database", logger.DEBUG)
 
         myDB = db.DBConnection()
@@ -822,13 +966,20 @@ class TVShow(object):
                         "flatten_folders": self.flatten_folders,
                         "paused": self.paused,
                         "air_by_date": self.air_by_date,
+                        "subtitles": self.subtitles,
                         "startyear": self.startyear,
                         "tvr_name": self.tvrname,
-                        "lang": self.lang
+                        "lang": self.lang,
+                        "imdb_id": self.imdbid
                         }
 
         myDB.upsert("tv_shows", newValueDict, controlValueDict)
-
+        
+        if self.imdbid:
+            controlValueDict = {"tvdb_id": self.tvdbid}
+            newValueDict = self.imdb_info
+            
+            myDB.upsert("imdb_info", newValueDict, controlValueDict)
 
     def __str__(self):
         toReturn = ""
@@ -929,7 +1080,7 @@ class TVShow(object):
             # if it's >= maxBestQuality then it's good
             else:
                 return Overview.GOOD
-
+            
 def dirty_setter(attr_name):
     def wrapper(self, val):
         if getattr(self, attr_name) != val:
@@ -945,6 +1096,9 @@ class TVEpisode(object):
         self._season = season
         self._episode = episode
         self._description = ""
+        self._subtitles = list()
+        self._subtitles_searchcount = 0
+        self._subtitles_lastsearch = str(datetime.datetime.min)
         self._airdate = datetime.date.fromordinal(1)
         self._hasnfo = False
         self._hastbn = False
@@ -952,6 +1106,7 @@ class TVEpisode(object):
         self._tvdbid = 0
         self._file_size = 0
         self._release_name = ''
+        self._is_proper = False
 
         # setting any of the above sets the dirty flag
         self.dirty = True
@@ -971,6 +1126,9 @@ class TVEpisode(object):
     season = property(lambda self: self._season, dirty_setter("_season"))
     episode = property(lambda self: self._episode, dirty_setter("_episode"))
     description = property(lambda self: self._description, dirty_setter("_description"))
+    subtitles = property(lambda self: self._subtitles, dirty_setter("_subtitles"))
+    subtitles_searchcount = property(lambda self: self._subtitles_searchcount, dirty_setter("_subtitles_searchcount"))
+    subtitles_lastsearch = property(lambda self: self._subtitles_lastsearch, dirty_setter("_subtitles_lastsearch"))
     airdate = property(lambda self: self._airdate, dirty_setter("_airdate"))
     hasnfo = property(lambda self: self._hasnfo, dirty_setter("_hasnfo"))
     hastbn = property(lambda self: self._hastbn, dirty_setter("_hastbn"))
@@ -979,6 +1137,7 @@ class TVEpisode(object):
     #location = property(lambda self: self._location, dirty_setter("_location"))
     file_size = property(lambda self: self._file_size, dirty_setter("_file_size"))
     release_name = property(lambda self: self._release_name, dirty_setter("_release_name"))
+    is_proper = property(lambda self: self._is_proper, dirty_setter("_is_proper"))
 
     def _set_location(self, new_location):
         logger.log(u"Setter sets location to " + new_location, logger.DEBUG)
@@ -992,6 +1151,49 @@ class TVEpisode(object):
             self.file_size = 0
 
     location = property(lambda self: self._location, _set_location)
+    def refreshSubtitles(self):
+        """Look for subtitles files and refresh the subtitles property"""
+        self.subtitles = subtitles.subtitlesLanguages(self.location)
+
+    def downloadSubtitles(self,force=False):
+        #TODO: Add support for force option
+        if not ek.ek(os.path.isfile, self.location):
+            logger.log(str(self.show.tvdbid) + ": Episode file doesn't exist, can't download subtitles for episode " + str(self.season) + "x" + str(self.episode), logger.DEBUG)
+            return
+        logger.log(str(self.show.tvdbid) + ": Downloading subtitles for episode " + str(self.season) + "x" + str(self.episode), logger.DEBUG)
+        
+        previous_subtitles = self.subtitles
+
+        try:
+            need_languages = set(sickbeard.SUBTITLES_LANGUAGES) - set(self.subtitles)
+            subtitles = subliminal.download_subtitles([self.location], languages=need_languages, services=sickbeard.subtitles.getEnabledServiceList(), force=force, multi=True, cache_dir=sickbeard.CACHE_DIR)
+            
+        except Exception as e:
+            logger.log("Error occurred when downloading subtitles: " + str(e), logger.DEBUG)
+            return
+
+        self.refreshSubtitles()
+        self.subtitles_searchcount = self.subtitles_searchcount + 1 if self.subtitles_searchcount else 1 #added the if because sometime it raise an error
+        self.subtitles_lastsearch = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.saveToDB()
+        
+        newsubtitles = set(self.subtitles).difference(set(previous_subtitles))
+        
+        if newsubtitles:
+            subtitleList = ", ".join(subliminal.language.Language(x).name for x in newsubtitles)
+            logger.log(str(self.show.tvdbid) + ": Downloaded " + subtitleList + " subtitles for episode " + str(self.season) + "x" + str(self.episode), logger.DEBUG) 
+            
+            notifiers.notify_subtitle_download(self.prettyName(), subtitleList)
+
+        else:
+            logger.log(str(self.show.tvdbid) + ": No subtitles downloaded for episode " + str(self.season) + "x" + str(self.episode), logger.DEBUG)
+
+        if sickbeard.SUBTITLES_HISTORY:
+            for video in subtitles:
+                for subtitle in subtitles.get(video):
+                    history.logSubtitle(self.show.tvdbid, self.season, self.episode, self.status, subtitle)
+        
+        return subtitles
 
     def checkForMetaFiles(self):
 
@@ -1071,6 +1273,10 @@ class TVEpisode(object):
             self.description = sqlResults[0]["description"]
             if self.description == None:
                 self.description = ""
+            if sqlResults[0]["subtitles"] != None and sqlResults[0]["subtitles"] != '':
+                self.subtitles = sqlResults[0]["subtitles"].split(",")
+            self.subtitles_searchcount = sqlResults[0]["subtitles_searchcount"]
+            self.subtitles_lastsearch = sqlResults[0]["subtitles_lastsearch"]
             self.airdate = datetime.date.fromordinal(int(sqlResults[0]["airdate"]))
             #logger.log(u"1 Status changes from " + str(self.status) + " to " + str(sqlResults[0]["status"]), logger.DEBUG)
             self.status = int(sqlResults[0]["status"])
@@ -1087,6 +1293,9 @@ class TVEpisode(object):
             
             if sqlResults[0]["release_name"] != None:
                 self.release_name = sqlResults[0]["release_name"]
+
+            if sqlResults[0]["is_proper"]:
+                self.is_proper = int(sqlResults[0]["is_proper"])
 
             self.dirty = False
             return True
@@ -1289,6 +1498,9 @@ class TVEpisode(object):
         toReturn += str(self.show.name) + " - " + str(self.season) + "x" + str(self.episode) + " - " + str(self.name) + "\n"
         toReturn += "location: " + str(self.location) + "\n"
         toReturn += "description: " + str(self.description) + "\n"
+        toReturn += "subtitles: " + str(",".join(self.subtitles)) + "\n"
+        toReturn += "subtitles_searchcount: " + str(self.subtitles_searchcount) + "\n"
+        toReturn += "subtitles_lastsearch: " + str(self.subtitles_lastsearch) + "\n"
         toReturn += "airdate: " + str(self.airdate.toordinal()) + " (" + str(self.airdate) + ")\n"
         toReturn += "hasnfo: " + str(self.hasnfo) + "\n"
         toReturn += "hastbn: " + str(self.hastbn) + "\n"
@@ -1359,16 +1571,21 @@ class TVEpisode(object):
         logger.log(u"STATUS IS " + str(self.status), logger.DEBUG)
 
         myDB = db.DBConnection()
+        
         newValueDict = {"tvdbid": self.tvdbid,
                         "name": self.name,
                         "description": self.description,
+                        "subtitles": ",".join([sub for sub in self.subtitles]),
+                        "subtitles_searchcount": self.subtitles_searchcount,
+                        "subtitles_lastsearch": self.subtitles_lastsearch,
                         "airdate": self.airdate.toordinal(),
                         "hasnfo": self.hasnfo,
                         "hastbn": self.hastbn,
                         "status": self.status,
                         "location": self.location,
                         "file_size": self.file_size,
-                        "release_name": self.release_name}
+                        "release_name": self.release_name,
+                        "is_proper": self.is_proper}
         controlValueDict = {"showid": self.show.tvdbid,
                             "season": self.season,
                             "episode": self.episode}
@@ -1471,11 +1688,16 @@ class TVEpisode(object):
             return parse_result.release_group
 
         epStatus, epQual = Quality.splitCompositeStatus(self.status) #@UnusedVariable
+
+        if sickbeard.NAMING_STRIP_YEAR:
+            show_name = re.sub("\(\d+\)$", "", self.show.name).rstrip()
+        else:
+            show_name = self.show.name 
         
         return {
-                   '%SN': self.show.name,
-                   '%S.N': dot(self.show.name),
-                   '%S_N': us(self.show.name),
+                   '%SN': show_name,
+                   '%S.N': dot(show_name),
+                   '%S_N': us(show_name),
                    '%EN': ep_name,
                    '%E.N': dot(ep_name),
                    '%E_N': us(ep_name),
@@ -1497,6 +1719,7 @@ class TVEpisode(object):
                    '%D': str(self.airdate.day),
                    '%0M': '%02d' % self.airdate.month,
                    '%0D': '%02d' % self.airdate.day,
+                   '%RT': "PROPER" if self.is_proper else "",
                    }
 
     def _format_string(self, pattern, replace_map):
@@ -1537,7 +1760,7 @@ class TVEpisode(object):
                 result_name = result_name.replace('%RN', '%S.N.S%0SE%0E.%E.N-SiCKBEARD')
                 result_name = result_name.replace('%rn', '%s.n.s%0se%0e.%e.n-sickbeard')
 
-            result_name = result_name.replace('%RG', 'SiCKBEARD')
+            result_name = result_name.replace('%RG', 'SICKBEARD')
             result_name = result_name.replace('%rg', 'sickbeard')
             logger.log(u"Episode has no release name, replacing it with a generic one: "+result_name, logger.DEBUG)
         
@@ -1574,7 +1797,7 @@ class TVEpisode(object):
                     sep = ' '
 
                 # force 2-3-4 format if they chose to extend
-                if multi in (NAMING_EXTEND, NAMING_LIMITED_EXTEND, NAMING_LIMITED_EXTEND_E_PREFIXED):
+                if multi in (NAMING_EXTEND, NAMING_LIMITED_EXTEND):
                     ep_sep = '-'
                 
                 regex_used = season_ep_regex
@@ -1599,7 +1822,7 @@ class TVEpisode(object):
             for other_ep in self.relatedEps:
                 
                 # for limited extend we only append the last ep
-                if multi in (NAMING_LIMITED_EXTEND, NAMING_LIMITED_EXTEND_E_PREFIXED) and other_ep != self.relatedEps[-1]:
+                if multi == NAMING_LIMITED_EXTEND and other_ep != self.relatedEps[-1]:
                     continue
                 
                 elif multi == NAMING_DUPLICATE:
@@ -1611,10 +1834,10 @@ class TVEpisode(object):
 
                 # add "E04"
                 ep_string += ep_sep
-
+                
                 if multi == NAMING_LIMITED_EXTEND_E_PREFIXED:
                     ep_string += 'E'
-
+                
                 ep_string += other_ep._format_string(ep_format.upper(), other_ep._replace_map())
 
             if season_ep_match:
@@ -1629,9 +1852,8 @@ class TVEpisode(object):
             result_name = result_name.replace(cur_name_group, cur_name_group_result)
 
         result_name = self._format_string(result_name, replace_map)
-
-        logger.log(u"formatting pattern: "+pattern+" -> "+result_name, logger.DEBUG)
         
+        logger.log(u"formatting pattern: "+pattern+" -> "+result_name, logger.DEBUG)
         
         return result_name
 
@@ -1697,13 +1919,11 @@ class TVEpisode(object):
         in the naming settings.
         """
 
-        if not ek.ek(os.path.isfile, self.location):
-            logger.log(u"Can't perform rename on " + self.location + " when it doesn't exist, skipping", logger.WARNING)
-            return
-
         proper_path = self.proper_path()
         absolute_proper_path = ek.ek(os.path.join, self.show.location, proper_path)
         absolute_current_path_no_ext, file_ext = os.path.splitext(self.location)
+        
+        related_subs = []
 
         current_path = absolute_current_path_no_ext
 
@@ -1718,6 +1938,11 @@ class TVEpisode(object):
             return
 
         related_files = postProcessor.PostProcessor(self.location)._list_associated_files(self.location)
+
+        if self.show.subtitles and sickbeard.SUBTITLES_DIR != '':
+            related_subs = postProcessor.PostProcessor(self.location)._list_associated_files(sickbeard.SUBTITLES_DIR, subtitles_only=True)
+            absolute_proper_subs_path = ek.ek(os.path.join, sickbeard.SUBTITLES_DIR, self.formatted_filename())
+            
         logger.log(u"Files associated to " + self.location + ": " + str(related_files), logger.DEBUG)
 
         # move the ep file
@@ -1728,6 +1953,11 @@ class TVEpisode(object):
             cur_result = helpers.rename_ep_file(cur_related_file, absolute_proper_path)
             if cur_result == False:
                 logger.log(str(self.tvdbid) + ": Unable to rename file " + cur_related_file, logger.ERROR)
+
+        for cur_related_sub in related_subs:
+            cur_result = helpers.rename_ep_file(cur_related_sub, absolute_proper_subs_path)
+            if cur_result == False:
+                logger.log(str(self.tvdbid) + ": Unable to rename file " + cur_related_sub, logger.ERROR)
 
         # save the ep
         with self.lock:

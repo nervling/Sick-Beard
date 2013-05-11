@@ -26,6 +26,7 @@ import re
 import threading
 import datetime
 import random
+import locale
 
 from Cheetah.Template import Template
 import cherrypy.lib
@@ -33,6 +34,7 @@ import cherrypy.lib
 import sickbeard
 
 from sickbeard import config, sab
+from sickbeard import clients
 from sickbeard import history, notifiers, processTV
 from sickbeard import ui
 from sickbeard import logger, helpers, exceptions, classes, db
@@ -40,14 +42,22 @@ from sickbeard import encodingKludge as ek
 from sickbeard import search_queue
 from sickbeard import image_cache
 from sickbeard import naming
+from sickbeard import scene_exceptions
+from sickbeard import subtitles
 
 from sickbeard.providers import newznab
-from sickbeard.common import Quality, Overview, statusStrings
+from sickbeard.common import Quality, Overview, statusStrings, qualityPresetStrings
 from sickbeard.common import SNATCHED, SKIPPED, UNAIRED, IGNORED, ARCHIVED, WANTED
+from sickbeard.common import SD, HD720p, HD1080p
 from sickbeard.exceptions import ex
 from sickbeard.webapi import Api
 
 from lib.tvdb_api import tvdb_api
+from lib.dateutil import tz
+
+import subliminal
+
+import network_timezones
 
 try:
     import json
@@ -64,7 +74,8 @@ from sickbeard import browser
 
 class PageTemplate (Template):
     def __init__(self, *args, **KWs):
-        KWs['file'] = os.path.join(sickbeard.PROG_DIR, "data/interfaces/default/", KWs['file'])
+#        KWs['file'] = os.path.join(sickbeard.PROG_DIR, "data/interfaces/default/", KWs['file'])
+        KWs['file'] = os.path.join(sickbeard.PROG_DIR, "gui/"+sickbeard.GUI_NAME+"/interfaces/default/", KWs['file'])
         super(PageTemplate, self).__init__(*args, **KWs)
         self.sbRoot = sickbeard.WEB_ROOT
         self.sbHttpPort = sickbeard.WEB_PORT
@@ -151,6 +162,8 @@ ManageMenu = [
     { 'title': 'Manage Searches',           'path': 'manage/manageSearches'  },
     { 'title': 'Episode Status Management', 'path': 'manage/episodeStatuses' },
 ]
+if sickbeard.USE_SUBTITLES:
+    ManageMenu.append({ 'title': 'Missed Subtitle Management', 'path': 'manage/subtitleMissed' })
 
 class ManageSearches:
 
@@ -215,19 +228,19 @@ class Manage:
         status_list = [int(whichStatus)]
         if status_list[0] == SNATCHED:
             status_list = Quality.SNATCHED + Quality.SNATCHED_PROPER
-
+        
         cur_show_results = myDB.select("SELECT season, episode, name FROM tv_episodes WHERE showid = ? AND season != 0 AND status IN ("+','.join(['?']*len(status_list))+")", [int(tvdb_id)] + status_list)
-
+        
         result = {}
         for cur_result in cur_show_results:
             cur_season = int(cur_result["season"])
             cur_episode = int(cur_result["episode"])
-
+            
             if cur_season not in result:
                 result[cur_season] = {}
-
+            
             result[cur_season][cur_episode] = cur_result["name"]
-
+        
         return json.dumps(result)
 
     @cherrypy.expose
@@ -240,7 +253,7 @@ class Manage:
                 status_list = Quality.SNATCHED + Quality.SNATCHED_PROPER
         else:
             status_list = []
-
+        
         t = PageTemplate(file="manage_episodeStatuses.tmpl")
         t.submenu = ManageMenu
         t.whichStatus = whichStatus
@@ -248,7 +261,7 @@ class Manage:
         # if we have no status then this is as far as we need to go
         if not status_list:
             return _munge(t)
-
+        
         myDB = db.DBConnection()
         status_results = myDB.select("SELECT show_name, tv_shows.tvdb_id as tvdb_id FROM tv_episodes, tv_shows WHERE tv_episodes.status IN ("+','.join(['?']*len(status_list))+") AND season != 0 AND tv_episodes.showid = tv_shows.tvdb_id ORDER BY show_name", status_list)
 
@@ -261,11 +274,11 @@ class Manage:
                 ep_counts[cur_tvdb_id] = 1
             else:
                 ep_counts[cur_tvdb_id] += 1
-
+        
             show_names[cur_tvdb_id] = cur_status_result["show_name"]
             if cur_tvdb_id not in sorted_show_ids:
                 sorted_show_ids.append(cur_tvdb_id)
-
+        
         t.show_names = show_names
         t.ep_counts = ep_counts
         t.sorted_show_ids = sorted_show_ids
@@ -273,26 +286,26 @@ class Manage:
 
     @cherrypy.expose
     def changeEpisodeStatuses(self, oldStatus, newStatus, *args, **kwargs):
-
+        
         status_list = [int(oldStatus)]
         if status_list[0] == SNATCHED:
             status_list = Quality.SNATCHED + Quality.SNATCHED_PROPER
 
         to_change = {}
-
+        
         # make a list of all shows and their associated args
         for arg in kwargs:
             tvdb_id, what = arg.split('-')
-
+            
             # we don't care about unchecked checkboxes
             if kwargs[arg] != 'on':
                 continue
-
+            
             if tvdb_id not in to_change:
                 to_change[tvdb_id] = []
-
+            
             to_change[tvdb_id].append(what)
-
+        
         myDB = db.DBConnection()
 
         for cur_tvdb_id in to_change:
@@ -304,19 +317,137 @@ class Manage:
                 to_change[cur_tvdb_id] = all_eps
 
             Home().setStatus(cur_tvdb_id, '|'.join(to_change[cur_tvdb_id]), newStatus, direct=True)
-
+            
         redirect('/manage/episodeStatuses')
 
     @cherrypy.expose
+    def showSubtitleMissed(self, tvdb_id, whichSubs):
+        myDB = db.DBConnection()
+
+        cur_show_results = myDB.select("SELECT season, episode, name, subtitles FROM tv_episodes WHERE showid = ? AND season != 0 AND status LIKE '%4'", [int(tvdb_id)])
+        
+        result = {}
+        for cur_result in cur_show_results:
+            if whichSubs == 'all':
+                if len(set(cur_result["subtitles"].split(',')).intersection(set(subtitles.wantedLanguages()))) >= len(subtitles.wantedLanguages()):
+                    continue
+            elif whichSubs in cur_result["subtitles"].split(','):
+                continue
+
+            cur_season = int(cur_result["season"])
+            cur_episode = int(cur_result["episode"])
+            
+            if cur_season not in result:
+                result[cur_season] = {}
+            
+            if cur_episode not in result[cur_season]:
+                result[cur_season][cur_episode] = {}
+            
+            result[cur_season][cur_episode]["name"] = cur_result["name"]
+            
+            result[cur_season][cur_episode]["subtitles"] = ",".join(subliminal.language.Language(subtitle).alpha2 for subtitle in cur_result["subtitles"].split(',')) if not cur_result["subtitles"] == '' else ''
+        
+        return json.dumps(result)
+        
+    @cherrypy.expose
+    def subtitleMissed(self, whichSubs=None):
+
+        t = PageTemplate(file="manage_subtitleMissed.tmpl")
+        t.submenu = ManageMenu
+        t.whichSubs = whichSubs
+        
+        if not whichSubs:
+            return _munge(t)
+
+        myDB = db.DBConnection()
+        status_results = myDB.select("SELECT show_name, tv_shows.tvdb_id as tvdb_id, tv_episodes.subtitles subtitles FROM tv_episodes, tv_shows WHERE tv_shows.subtitles = 1 AND tv_episodes.status LIKE '%4' AND tv_episodes.season != 0 AND tv_episodes.showid = tv_shows.tvdb_id ORDER BY show_name")
+
+        ep_counts = {}
+        show_names = {}
+        sorted_show_ids = []
+        for cur_status_result in status_results:
+            if whichSubs == 'all':
+                if len(set(cur_status_result["subtitles"].split(',')).intersection(set(subtitles.wantedLanguages()))) >= len(subtitles.wantedLanguages()):
+                    continue
+            elif whichSubs in cur_status_result["subtitles"].split(','):
+                continue
+            
+            cur_tvdb_id = int(cur_status_result["tvdb_id"])
+            if cur_tvdb_id not in ep_counts:
+                ep_counts[cur_tvdb_id] = 1
+            else:
+                ep_counts[cur_tvdb_id] += 1
+        
+            show_names[cur_tvdb_id] = cur_status_result["show_name"]
+            if cur_tvdb_id not in sorted_show_ids:
+                sorted_show_ids.append(cur_tvdb_id)
+        
+        t.show_names = show_names
+        t.ep_counts = ep_counts
+        t.sorted_show_ids = sorted_show_ids
+        return _munge(t)
+    
+    @cherrypy.expose
+    def downloadSubtitleMissed(self, *args, **kwargs):
+        
+        to_download = {}
+        
+        # make a list of all shows and their associated args
+        for arg in kwargs:
+            tvdb_id, what = arg.split('-')
+            
+            # we don't care about unchecked checkboxes
+            if kwargs[arg] != 'on':
+                continue
+            
+            if tvdb_id not in to_download:
+                to_download[tvdb_id] = []
+            
+            to_download[tvdb_id].append(what)
+        
+        for cur_tvdb_id in to_download:
+            # get a list of all the eps we want to download subtitles if they just said "all"
+            if 'all' in to_download[cur_tvdb_id]:
+                myDB = db.DBConnection()
+                all_eps_results = myDB.select("SELECT season, episode FROM tv_episodes WHERE status LIKE '%4' AND season != 0 AND showid = ?", [cur_tvdb_id])
+                to_download[cur_tvdb_id] = [str(x["season"])+'x'+str(x["episode"]) for x in all_eps_results]
+            
+            for epResult in to_download[cur_tvdb_id]:
+                season, episode = epResult.split('x');
+            
+                show = sickbeard.helpers.findCertainShow(sickbeard.showList, int(cur_tvdb_id))
+                subtitles = show.getEpisode(int(season), int(episode)).downloadSubtitles()
+                
+                if sickbeard.SUBTITLES_DIR:
+                    for video in subtitles:
+                        subs_new_path = ek.ek(os.path.join, os.path.dirname(video.path), sickbeard.SUBTITLES_DIR)
+                        dir_exists = helpers.makeDir(subs_new_path)
+                        if not dir_exists:
+                            logger.log(u"Unable to create subtitles folder "+subs_new_path, logger.ERROR)
+                        else:
+                            helpers.chmodAsParent(subs_new_path)
+                        
+                        for subtitle in subtitles.get(video):
+                            new_file_path = ek.ek(os.path.join, subs_new_path, os.path.basename(subtitle.path))
+                            helpers.moveFile(subtitle.path, new_file_path)
+                            helpers.chmodAsParent(new_file_path)
+                else:
+                    for video in subtitles:
+                        for subtitle in subtitles.get(video):
+                            helpers.chmodAsParent(subtitle.path)
+                        
+        redirect('/manage/subtitleMissed')
+
+    @cherrypy.expose
     def backlogShow(self, tvdb_id):
-
+        
         show_obj = helpers.findCertainShow(sickbeard.showList, int(tvdb_id))
-
+        
         if show_obj:
             sickbeard.backlogSearchScheduler.action.searchBacklog([show_obj]) #@UndefinedVariable
-
+        
         redirect("/manage/backlogOverview")
-
+        
     @cherrypy.expose
     def backlogOverview(self):
 
@@ -341,7 +472,7 @@ class Manage:
             epCounts[Overview.SNATCHED] = 0
 
             sqlResults = myDB.select("SELECT * FROM tv_episodes WHERE showid = ? ORDER BY season DESC, episode DESC", [curShow.tvdbid])
-
+            
             for curResult in sqlResults:
 
                 curEpCat = curShow.getOverview(int(curResult["status"]))
@@ -380,18 +511,21 @@ class Manage:
 
         paused_all_same = True
         last_paused = None
-
+        
         quality_all_same = True
         last_quality = None
+        
+        subtitles_all_same = True
+        last_subtitles = None
 
         root_dir_list = []
 
         for curShow in showList:
-
+            
             cur_root_dir = ek.ek(os.path.dirname, curShow._location)
             if cur_root_dir not in root_dir_list:
-                root_dir_list.append(cur_root_dir)
-
+                root_dir_list.append(cur_root_dir) 
+            
             # if we know they're not all the same then no point even bothering
             if paused_all_same:
                 # if we had a value already and this value is different then they're not all the same
@@ -412,16 +546,23 @@ class Manage:
                 else:
                     last_quality = curShow.quality
 
+            if subtitles_all_same:
+                if last_subtitles not in (None, curShow.subtitles):
+                    subtitles_all_same = False
+                else:
+                    last_subtitles = curShow.subtitles
+
         t.showList = toEdit
         t.paused_value = last_paused if paused_all_same else None
         t.flatten_folders_value = last_flatten_folders if flatten_folders_all_same else None
         t.quality_value = last_quality if quality_all_same else None
+        t.subtitles_value = last_subtitles if subtitles_all_same else None
         t.root_dir_list = root_dir_list
 
         return _munge(t)
 
     @cherrypy.expose
-    def massEditSubmit(self, paused=None, flatten_folders=None, quality_preset=False,
+    def massEditSubmit(self, paused=None, flatten_folders=None, quality_preset=False, subtitles=None,
                        anyQualities=[], bestQualities=[], toEdit=None, *args, **kwargs):
 
         dir_map = {}
@@ -447,7 +588,7 @@ class Manage:
                 logger.log(u"For show "+showObj.name+" changing dir from "+showObj._location+" to "+new_show_dir)
             else:
                 new_show_dir = showObj._location
-
+            
             if paused == 'keep':
                 new_paused = showObj.paused
             else:
@@ -460,10 +601,19 @@ class Manage:
                 new_flatten_folders = True if flatten_folders == 'enable' else False
             new_flatten_folders = 'on' if new_flatten_folders else 'off'
 
+            if subtitles == 'keep':
+                new_subtitles = showObj.subtitles
+            else:
+                new_subtitles = True if subtitles == 'enable' else False
+
+            new_subtitles = 'on' if new_subtitles else 'off'
+
             if quality_preset == 'keep':
                 anyQualities, bestQualities = Quality.splitQuality(showObj.quality)
 
-            curErrors += Home().editShow(curShow, new_show_dir, anyQualities, bestQualities, new_flatten_folders, new_paused, directCall=True)
+            exceptions_list = []
+            
+            curErrors += Home().editShow(curShow, new_show_dir, anyQualities, bestQualities, exceptions_list, new_flatten_folders, new_paused, subtitles=new_subtitles, directCall=True)
 
             if curErrors:
                 logger.log(u"Errors: "+str(curErrors), logger.ERROR)
@@ -476,7 +626,7 @@ class Manage:
         redirect("/manage")
 
     @cherrypy.expose
-    def massUpdate(self, toUpdate=None, toRefresh=None, toRename=None, toDelete=None, toMetadata=None):
+    def massUpdate(self, toUpdate=None, toRefresh=None, toRename=None, toDelete=None, toMetadata=None, toSubtitle=None):
 
         if toUpdate != None:
             toUpdate = toUpdate.split('|')
@@ -492,6 +642,11 @@ class Manage:
             toRename = toRename.split('|')
         else:
             toRename = []
+            
+        if toSubtitle != None:
+            toSubtitle = toSubtitle.split('|')
+        else:
+            toSubtitle = []
 
         if toDelete != None:
             toDelete = toDelete.split('|')
@@ -507,8 +662,9 @@ class Manage:
         refreshes = []
         updates = []
         renames = []
+        subtitles = []
 
-        for curShowID in set(toUpdate+toRefresh+toRename+toDelete+toMetadata):
+        for curShowID in set(toUpdate+toRefresh+toRename+toSubtitle+toDelete+toMetadata):
 
             if curShowID == '':
                 continue
@@ -541,6 +697,10 @@ class Manage:
             if curShowID in toRename:
                 sickbeard.showQueueScheduler.action.renameShowEpisodes(showObj) #@UndefinedVariable
                 renames.append(showObj.name)
+                
+            if curShowID in toSubtitle:
+                sickbeard.showQueueScheduler.action.downloadSubtitles(showObj) #@UndefinedVariable
+                subtitles.append(showObj.name)
 
         if len(errors) > 0:
             ui.notifications.error("Errors encountered",
@@ -562,8 +722,13 @@ class Manage:
             messageDetail += "<br /><b>Renames</b><br /><ul><li>"
             messageDetail += "</li><li>".join(renames)
             messageDetail += "</li></ul>"
+            
+        if len(subtitles) > 0:
+            messageDetail += "<br /><b>Subtitles</b><br /><ul><li>"
+            messageDetail += "</li><li>".join(subtitles)
+            messageDetail += "</li></ul>"
 
-        if len(updates+refreshes+renames) > 0:
+        if len(updates+refreshes+renames+subtitles) > 0:
             ui.notifications.message("The following actions were queued:",
                           messageDetail)
 
@@ -616,6 +781,7 @@ ConfigMenu = [
     { 'title': 'General',           'path': 'config/general/'          },
     { 'title': 'Search Settings',   'path': 'config/search/'           },
     { 'title': 'Search Providers',  'path': 'config/providers/'        },
+    { 'title': 'Subtitles Settings','path': 'config/subtitles/'        },
     { 'title': 'Post Processing',   'path': 'config/postProcessing/'   },
     { 'title': 'Notifications',     'path': 'config/notifications/'    },
 ]
@@ -632,9 +798,9 @@ class ConfigGeneral:
     @cherrypy.expose
     def saveRootDirs(self, rootDirString=None):
         sickbeard.ROOT_DIRS = rootDirString
-
+    
     @cherrypy.expose
-    def saveAddShowDefaults(self, defaultFlattenFolders, defaultStatus, anyQualities, bestQualities):
+    def saveAddShowDefaults(self, defaultFlattenFolders, defaultStatus, anyQualities, bestQualities, subtitles):
 
         if anyQualities:
             anyQualities = anyQualities.split(',')
@@ -647,7 +813,7 @@ class ConfigGeneral:
             bestQualities = []
 
         newQuality = Quality.combineQualities(map(int, anyQualities), map(int, bestQualities))
-
+        
         sickbeard.STATUS_DEFAULT = int(defaultStatus)
         sickbeard.QUALITY_DEFAULT = int(newQuality)
 
@@ -658,6 +824,12 @@ class ConfigGeneral:
 
         sickbeard.FLATTEN_FOLDERS_DEFAULT = int(defaultFlattenFolders)
 
+        if subtitles == "true":
+            subtitles = 1
+        else:
+            subtitles = 0
+        sickbeard.SUBTITLES_DEFAULT = int(subtitles)
+
     @cherrypy.expose
     def generateKey(self):
         """ Return a new randomized API_KEY
@@ -667,14 +839,14 @@ class ConfigGeneral:
             from hashlib import md5
         except ImportError:
             from md5 import md5
-
+        
         # Create some values to seed md5
         t = str(time.time())
         r = str(random.random())
-
+        
         # Create the md5 instance and give it the current time
         m = md5(t)
-
+        
         # Update the md5 instance with the random variable
         m.update(r)
 
@@ -684,8 +856,8 @@ class ConfigGeneral:
 
     @cherrypy.expose
     def saveGeneral(self, log_dir=None, web_port=None, web_log=None, web_ipv6=None,
-                    launch_browser=None, web_username=None, use_api=None, api_key=None,
-                    web_password=None, version_notify=None, enable_https=None, https_cert=None, https_key=None):
+                    update_shows_on_start=None, launch_browser=None, web_username=None, use_api=None, api_key=None,
+                    web_password=None, version_notify=None, enable_https=None, https_cert=None, https_key=None, sort_article=None):
 
         results = []
 
@@ -699,6 +871,16 @@ class ConfigGeneral:
         else:
             web_log = 0
 
+        if update_shows_on_start == "on":
+            update_shows_on_start = 1
+        else:
+            update_shows_on_start = 0
+
+        if sort_article == "on":
+            sort_article = 1
+        else:
+            sort_article = 0
+            
         if launch_browser == "on":
             launch_browser = 1
         else:
@@ -712,7 +894,9 @@ class ConfigGeneral:
         if not config.change_LOG_DIR(log_dir):
             results += ["Unable to create directory " + os.path.normpath(log_dir) + ", log dir not changed."]
 
+        sickbeard.UPDATE_SHOWS_ON_START = update_shows_on_start
         sickbeard.LAUNCH_BROWSER = launch_browser
+        sickbeard.SORT_ARTICLE = sort_article
 
         sickbeard.WEB_PORT = int(web_port)
         sickbeard.WEB_IPV6 = web_ipv6
@@ -727,14 +911,14 @@ class ConfigGeneral:
 
         sickbeard.USE_API = use_api
         sickbeard.API_KEY = api_key
-
+        
         if enable_https == "on":
             enable_https = 1
         else:
             enable_https = 0
-
+        
         sickbeard.ENABLE_HTTPS = enable_https
-
+        
         if not config.change_HTTPS_CERT(https_cert):
             results += ["Unable to create directory " + os.path.normpath(https_cert) + ", https cert dir not changed."]
 
@@ -768,7 +952,9 @@ class ConfigSearch:
     @cherrypy.expose
     def saveSearch(self, use_nzbs=None, use_torrents=None, nzb_dir=None, sab_username=None, sab_password=None,
                        sab_apikey=None, sab_category=None, sab_host=None, nzbget_password=None, nzbget_category=None, nzbget_host=None,
-                       torrent_dir=None, nzb_method=None, usenet_retention=None, search_frequency=None, download_propers=None):
+                       nzb_method=None, torrent_method=None, usenet_retention=None, search_frequency=None, download_propers=None, allow_high_priority=None,
+                       torrent_dir=None, torrent_username=None, torrent_password=None, torrent_host=None, torrent_label=None, torrent_path=None, 
+                       torrent_ratio=None, torrent_paused=None, torrent_high_bandwidth=None, ignore_words=None):
 
         results = []
 
@@ -785,6 +971,11 @@ class ConfigSearch:
         else:
             download_propers = 0
 
+        if allow_high_priority == "on":
+            allow_high_priority = 1
+        else:
+            allow_high_priority = 0
+
         if use_nzbs == "on":
             use_nzbs = 1
         else:
@@ -798,13 +989,20 @@ class ConfigSearch:
         if usenet_retention == None:
             usenet_retention = 200
 
+        if ignore_words == None:
+            ignore_words = ""
+
         sickbeard.USE_NZBS = use_nzbs
         sickbeard.USE_TORRENTS = use_torrents
 
         sickbeard.NZB_METHOD = nzb_method
+        sickbeard.TORRENT_METHOD = torrent_method
         sickbeard.USENET_RETENTION = int(usenet_retention)
-
+        
+        sickbeard.IGNORE_WORDS = ignore_words
+        
         sickbeard.DOWNLOAD_PROPERS = download_propers
+        sickbeard.ALLOW_HIGH_PRIORITY = allow_high_priority
 
         sickbeard.SAB_USERNAME = sab_username
         sickbeard.SAB_PASSWORD = sab_password
@@ -823,6 +1021,29 @@ class ConfigSearch:
         sickbeard.NZBGET_CATEGORY = nzbget_category
         sickbeard.NZBGET_HOST = nzbget_host
 
+        sickbeard.TORRENT_USERNAME = torrent_username
+        sickbeard.TORRENT_PASSWORD = torrent_password
+        sickbeard.TORRENT_LABEL = torrent_label
+        sickbeard.TORRENT_PATH = torrent_path
+        sickbeard.TORRENT_RATIO = torrent_ratio
+        if torrent_paused == "on":
+            torrent_paused = 1
+        else:
+            torrent_paused = 0
+        sickbeard.TORRENT_PAUSED = torrent_paused
+        if torrent_high_bandwidth == "on":
+            torrent_high_bandwidth = 1
+        else:
+            torrent_high_bandwidth = 0
+        sickbeard.TORRENT_HIGH_BANDWIDTH = torrent_high_bandwidth
+
+        if torrent_host and not re.match('https?://.*', torrent_host):
+            torrent_host = 'http://' + torrent_host
+
+        if not torrent_host.endswith('/'):
+            torrent_host = torrent_host + '/'
+
+        sickbeard.TORRENT_HOST = torrent_host
 
         sickbeard.save_config()
 
@@ -847,9 +1068,9 @@ class ConfigPostProcessing:
 
     @cherrypy.expose
     def savePostProcessing(self, naming_pattern=None, naming_multi_ep=None,
-                    xbmc_data=None, mediabrowser_data=None, synology_data=None, sony_ps3_data=None, wdtv_data=None, tivo_data=None,
+                    xbmc_data=None, mediabrowser_data=None, synology_data=None, sony_ps3_data=None, wdtv_data=None, tivo_data=None, mede8er_data=None,
                     use_banner=None, keep_processed_dir=None, process_automatically=None, rename_episodes=None,
-                    move_associated_files=None, tv_download_dir=None, naming_custom_abd=None, naming_abd_pattern=None):
+                    move_associated_files=None, tv_download_dir=None, naming_custom_abd=None, naming_abd_pattern=None, naming_strip_year=None):
 
         results = []
 
@@ -885,12 +1106,18 @@ class ConfigPostProcessing:
             naming_custom_abd = 1
         else:
             naming_custom_abd = 0
+            
+        if naming_strip_year == "on":
+            naming_strip_year = 1
+        else:
+            naming_strip_year = 0
 
         sickbeard.PROCESS_AUTOMATICALLY = process_automatically
         sickbeard.KEEP_PROCESSED_DIR = keep_processed_dir
         sickbeard.RENAME_EPISODES = rename_episodes
         sickbeard.MOVE_ASSOCIATED_FILES = move_associated_files
         sickbeard.NAMING_CUSTOM_ABD = naming_custom_abd
+        sickbeard.NAMING_STRIP_YEAR = naming_strip_year
 
         sickbeard.metadata_provider_dict['XBMC'].set_config(xbmc_data)
         sickbeard.metadata_provider_dict['MediaBrowser'].set_config(mediabrowser_data)
@@ -898,7 +1125,8 @@ class ConfigPostProcessing:
         sickbeard.metadata_provider_dict['Sony PS3'].set_config(sony_ps3_data)
         sickbeard.metadata_provider_dict['WDTV'].set_config(wdtv_data)
         sickbeard.metadata_provider_dict['TIVO'].set_config(tivo_data)
-
+        sickbeard.metadata_provider_dict['Mede8er'].set_config(mede8er_data)        
+        
         if self.isNamingValid(naming_pattern, naming_multi_ep) != "invalid":
             sickbeard.NAMING_PATTERN = naming_pattern
             sickbeard.NAMING_MULTI_EP = int(naming_multi_ep)
@@ -908,7 +1136,7 @@ class ConfigPostProcessing:
 
         if self.isNamingValid(naming_abd_pattern, None, True) != "invalid":
             sickbeard.NAMING_ABD_PATTERN = naming_abd_pattern
-        elif naming_custom_abd:
+        else:
             results.append("You tried saving an invalid air-by-date naming config, not saving your air-by-date settings")
 
         sickbeard.USE_BANNER = use_banner
@@ -933,16 +1161,16 @@ class ConfigPostProcessing:
 
         result = naming.test_name(pattern, multi, abd)
 
-        result = ek.ek(os.path.join, result['dir'], result['name'])
+        result = ek.ek(os.path.join, result['dir'], result['name']) 
 
         return result
-
+    
     @cherrypy.expose
     def isNamingValid(self, pattern=None, multi=None, abd=False):
         if pattern == None:
             return "invalid"
-
-        # air by date shows just need one check, we don't need to worry about season folders
+        
+        # air by date shows just need one check, we don't need to worry about season folders 
         if abd:
             is_valid = naming.check_valid_abd_naming(pattern)
             require_season_folders = False
@@ -950,7 +1178,7 @@ class ConfigPostProcessing:
         else:
             # check validity of single and multi ep cases for the whole path
             is_valid = naming.check_valid_naming(pattern, multi)
-
+    
             # check validity of single and multi ep cases for only the file name
             require_season_folders = naming.check_force_season_folders(pattern, multi)
 
@@ -961,7 +1189,7 @@ class ConfigPostProcessing:
         else:
             return "invalid"
 
-
+        
 class ConfigProviders:
 
     @cherrypy.expose
@@ -1033,9 +1261,13 @@ class ConfigProviders:
     def saveProviders(self, nzbmatrix_username=None, nzbmatrix_apikey=None,
                       nzbs_r_us_uid=None, nzbs_r_us_hash=None, newznab_string='',
                       omgwtfnzbs_uid=None, omgwtfnzbs_key=None,
-                      tvtorrents_digest=None, tvtorrents_hash=None,
-                      torrentleech_key=None,
+                      tvtorrents_digest=None, tvtorrents_hash=None, 
                       btn_api_key=None,
+                      dtt_norar = None, dtt_single = None,
+                      thepiratebay_trusted=None, thepiratebay_proxy=None, thepiratebay_proxy_url=None,
+                      torrentleech_username=None, torrentleech_password=None,
+                      iptorrents_username=None, iptorrents_password=None, iptorrents_freeleech=None,
+                      kat_trusted = None, kat_verified = None,
                       newzbin_username=None, newzbin_password=None,
                       provider_order=None):
 
@@ -1076,6 +1308,11 @@ class ConfigProviders:
                 if curProvider.getID() not in finishedNames:
                     sickbeard.newznabProviderList.remove(curProvider)
 
+        # delete anything that is missing
+        for curProvider in sickbeard.newznabProviderList:
+            if curProvider.getID() not in finishedNames:
+                sickbeard.newznabProviderList.remove(curProvider)
+
         # do the enable/disable
         for curProviderStr in provider_str_list:
             curProvider, curEnabled = curProviderStr.split(':')
@@ -1109,19 +1346,88 @@ class ConfigProviders:
                 sickbeard.BTN = curEnabled
             elif curProvider in newznabProviderDict:
                 newznabProviderDict[curProvider].enabled = bool(curEnabled)
+            elif curProvider == 'dailytvtorrents':
+                sickbeard.DTT = curEnabled                
+            elif curProvider == 'thepiratebay':
+                sickbeard.THEPIRATEBAY = curEnabled
+            elif curProvider == 'torrentleech':
+                sickbeard.TORRENTLEECH = curEnabled
+            elif curProvider == 'nzbx':
+                sickbeard.NZBX = curEnabled
+            elif curProvider == 'iptorrents':
+                sickbeard.IPTORRENTS = curEnabled
+            elif curProvider == 'omgwtfnzbs':
+                sickbeard.OMGWTFNZBS = curEnabled  
+            elif curProvider == 'kickasstorrents':
+                sickbeard.KAT = curEnabled                    
             else:
-                logger.log(u"don't know what " + curProvider + " is, skipping")
+                logger.log(u"don't know what "+curProvider+" is, skipping")
 
         sickbeard.TVTORRENTS_DIGEST = tvtorrents_digest.strip()
         sickbeard.TVTORRENTS_HASH = tvtorrents_hash.strip()
 
-        sickbeard.TORRENTLEECH_KEY = torrentleech_key.strip()
-
         sickbeard.BTN_API_KEY = btn_api_key.strip()
+
+        if dtt_norar == "on":
+            dtt_norar = 1
+        else:
+            dtt_norar = 0
+
+        sickbeard.DTT_NORAR = dtt_norar
+            
+        if dtt_single == "on":
+            dtt_single = 1
+        else:
+            dtt_single = 0
+
+        sickbeard.DTT_SINGLE = dtt_single  
+
+        if thepiratebay_trusted == "on":
+            thepiratebay_trusted = 1
+        else:
+            thepiratebay_trusted = 0
+
+        sickbeard.THEPIRATEBAY_TRUSTED = thepiratebay_trusted
+        
+        if thepiratebay_proxy == "on": 
+            thepiratebay_proxy = 1
+            sickbeard.THEPIRATEBAY_PROXY_URL = thepiratebay_proxy_url.strip()
+        else:
+            thepiratebay_proxy = 0
+            sickbeard.THEPIRATEBAY_PROXY_URL = ""
+            
+        sickbeard.THEPIRATEBAY_PROXY = thepiratebay_proxy
+        
+        sickbeard.TORRENTLEECH_USERNAME = torrentleech_username
+        sickbeard.TORRENTLEECH_PASSWORD = torrentleech_password    
+
+        sickbeard.IPTORRENTS_USERNAME = iptorrents_username.strip()
+        sickbeard.IPTORRENTS_PASSWORD = iptorrents_password.strip()
+
+        if iptorrents_freeleech == "on":
+            iptorrents_freeleech = 1
+        else:
+            iptorrents_freeleech = 0
+
+        sickbeard.IPTORRENTS_FREELEECH = iptorrents_freeleech
+
+        if kat_trusted == "on":
+            kat_trusted = 1
+        else:
+            kat_trusted = 0
+
+        sickbeard.KAT_TRUSTED = kat_trusted
+            
+        if kat_verified == "on":
+            kat_verified = 1
+        else:
+            kat_verified = 0   
+            
+        sickbeard.KAT_VERIFIED = kat_verified    
 
         sickbeard.NZBSRUS_UID = nzbs_r_us_uid.strip()
         sickbeard.NZBSRUS_HASH = nzbs_r_us_hash.strip()
-
+        
         sickbeard.OMGWTFNZBS_UID = omgwtfnzbs_uid.strip()
         sickbeard.OMGWTFNZBS_KEY = omgwtfnzbs_key.strip()
 
@@ -1149,23 +1455,27 @@ class ConfigNotifications:
         return _munge(t)
 
     @cherrypy.expose
-    def saveNotifications(self, use_xbmc=None, xbmc_notify_onsnatch=None, xbmc_notify_ondownload=None, xbmc_update_onlyfirst=None,
+    def saveNotifications(self, use_xbmc=None, xbmc_notify_onsnatch=None, xbmc_notify_ondownload=None, xbmc_notify_onsubtitledownload=None, xbmc_update_onlyfirst=None,
                           xbmc_update_library=None, xbmc_update_full=None, xbmc_host=None, xbmc_username=None, xbmc_password=None,
-                          use_plex=None, plex_notify_onsnatch=None, plex_notify_ondownload=None, plex_update_library=None,
+                          use_plex=None, plex_notify_onsnatch=None, plex_notify_ondownload=None, plex_notify_onsubtitledownload=None, plex_update_library=None,
                           plex_server_host=None, plex_host=None, plex_username=None, plex_password=None,
-                          use_growl=None, growl_notify_onsnatch=None, growl_notify_ondownload=None, growl_host=None, growl_password=None,
-                          use_prowl=None, prowl_notify_onsnatch=None, prowl_notify_ondownload=None, prowl_api=None, prowl_priority=0,
-                          use_twitter=None, twitter_notify_onsnatch=None, twitter_notify_ondownload=None,
-                          use_notifo=None, notifo_notify_onsnatch=None, notifo_notify_ondownload=None, notifo_username=None, notifo_apisecret=None,
-                          use_boxcar=None, boxcar_notify_onsnatch=None, boxcar_notify_ondownload=None, boxcar_username=None,
-                          use_pushover=None, pushover_notify_onsnatch=None, pushover_notify_ondownload=None, pushover_userkey=None,
-                          use_libnotify=None, libnotify_notify_onsnatch=None, libnotify_notify_ondownload=None,
+                          use_growl=None, growl_notify_onsnatch=None, growl_notify_ondownload=None, growl_notify_onsubtitledownload=None, growl_host=None, growl_password=None, 
+                          use_prowl=None, prowl_notify_onsnatch=None, prowl_notify_ondownload=None, prowl_notify_onsubtitledownload=None, prowl_api=None, prowl_priority=0, 
+                          use_twitter=None, twitter_notify_onsnatch=None, twitter_notify_ondownload=None, twitter_notify_onsubtitledownload=None, 
+                          use_notifo=None, notifo_notify_onsnatch=None, notifo_notify_ondownload=None, notifo_notify_onsubtitledownload=None, notifo_username=None, notifo_apisecret=None,
+                          use_boxcar=None, boxcar_notify_onsnatch=None, boxcar_notify_ondownload=None, boxcar_notify_onsubtitledownload=None, boxcar_username=None,
+                          use_pushover=None, pushover_notify_onsnatch=None, pushover_notify_ondownload=None, pushover_notify_onsubtitledownload=None, pushover_userkey=None,
+                          use_libnotify=None, libnotify_notify_onsnatch=None, libnotify_notify_ondownload=None, libnotify_notify_onsubtitledownload=None,
                           use_nmj=None, nmj_host=None, nmj_database=None, nmj_mount=None, use_synoindex=None,
                           use_nmjv2=None, nmjv2_host=None, nmjv2_dbloc=None, nmjv2_database=None,
-                          use_trakt=None, trakt_username=None, trakt_password=None, trakt_api=None,
-                          use_pytivo=None, pytivo_notify_onsnatch=None, pytivo_notify_ondownload=None, pytivo_update_library=None,
+                          use_trakt=None, trakt_username=None, trakt_password=None, trakt_api=None, trakt_remove_watchlist=None, trakt_use_watchlist=None, trakt_method_add=None, trakt_start_paused=None,
+                          use_synologynotifier=None, synologynotifier_notify_onsnatch=None, synologynotifier_notify_ondownload=None, synologynotifier_notify_onsubtitledownload=None,
+                          use_pytivo=None, pytivo_notify_onsnatch=None, pytivo_notify_ondownload=None, pytivo_notify_onsubtitledownload=None, pytivo_update_library=None, 
                           pytivo_host=None, pytivo_share_name=None, pytivo_tivo_name=None,
-                          use_nma=None, nma_notify_onsnatch=None, nma_notify_ondownload=None, nma_api=None, nma_priority=0 ):
+                          use_nma=None, nma_notify_onsnatch=None, nma_notify_ondownload=None, nma_notify_onsubtitledownload=None, nma_api=None, nma_priority=0,
+                          use_pushalot=None, pushalot_notify_onsnatch=None, pushalot_notify_ondownload=None, pushalot_notify_onsubtitledownload=None, pushalot_authorizationtoken=None,
+                          use_email=None, email_notify_onsnatch=None, email_notify_ondownload=None, email_notify_onsubtitledownload=None, email_host=None, email_port=25, email_from=None,
+                          email_tls=None, email_user=None, email_password=None, email_list=None, email_show_list=None, email_show=None ):
 
         results = []
 
@@ -1178,6 +1488,11 @@ class ConfigNotifications:
             xbmc_notify_ondownload = 1
         else:
             xbmc_notify_ondownload = 0
+
+        if xbmc_notify_onsubtitledownload == "on":
+            xbmc_notify_onsubtitledownload = 1
+        else:
+            xbmc_notify_onsubtitledownload = 0
 
         if xbmc_update_library == "on":
             xbmc_update_library = 1
@@ -1214,6 +1529,11 @@ class ConfigNotifications:
         else:
             plex_notify_ondownload = 0
 
+        if plex_notify_onsubtitledownload == "on":
+            plex_notify_onsubtitledownload = 1
+        else:
+            plex_notify_onsubtitledownload = 0
+
         if use_plex == "on":
             use_plex = 1
         else:
@@ -1229,11 +1549,16 @@ class ConfigNotifications:
         else:
             growl_notify_ondownload = 0
 
+        if growl_notify_onsubtitledownload == "on":
+            growl_notify_onsubtitledownload = 1
+        else:
+            growl_notify_onsubtitledownload = 0
+
         if use_growl == "on":
             use_growl = 1
         else:
             use_growl = 0
-
+            
         if prowl_notify_onsnatch == "on":
             prowl_notify_onsnatch = 1
         else:
@@ -1243,6 +1568,12 @@ class ConfigNotifications:
             prowl_notify_ondownload = 1
         else:
             prowl_notify_ondownload = 0
+        
+        if prowl_notify_onsubtitledownload == "on":
+            prowl_notify_onsubtitledownload = 1
+        else:
+            prowl_notify_onsubtitledownload = 0
+
         if use_prowl == "on":
             use_prowl = 1
         else:
@@ -1257,6 +1588,12 @@ class ConfigNotifications:
             twitter_notify_ondownload = 1
         else:
             twitter_notify_ondownload = 0
+        
+        if twitter_notify_onsubtitledownload == "on":
+            twitter_notify_onsubtitledownload = 1
+        else:
+            twitter_notify_onsubtitledownload = 0
+        
         if use_twitter == "on":
             use_twitter = 1
         else:
@@ -1271,6 +1608,12 @@ class ConfigNotifications:
             notifo_notify_ondownload = 1
         else:
             notifo_notify_ondownload = 0
+            
+        if notifo_notify_onsubtitledownload == "on":
+            notifo_notify_onsubtitledownload = 1
+        else:
+            notifo_notify_onsubtitledownload = 0
+            
         if use_notifo == "on":
             use_notifo = 1
         else:
@@ -1285,6 +1628,12 @@ class ConfigNotifications:
             boxcar_notify_ondownload = 1
         else:
             boxcar_notify_ondownload = 0
+
+        if boxcar_notify_onsubtitledownload == "on":
+            boxcar_notify_onsubtitledownload = 1
+        else:
+            boxcar_notify_onsubtitledownload = 0
+        
         if use_boxcar == "on":
             use_boxcar = 1
         else:
@@ -1299,6 +1648,12 @@ class ConfigNotifications:
             pushover_notify_ondownload = 1
         else:
             pushover_notify_ondownload = 0
+        
+        if pushover_notify_onsubtitledownload == "on":
+            pushover_notify_onsubtitledownload = 1
+        else:
+            pushover_notify_onsubtitledownload = 0
+
         if use_pushover == "on":
             use_pushover = 1
         else:
@@ -1309,26 +1664,91 @@ class ConfigNotifications:
         else:
             use_nmj = 0
 
-        if use_synoindex == "on":
-            use_synoindex = 1
-        else:
-            use_synoindex = 0
-
         if use_nmjv2 == "on":
             use_nmjv2 = 1
         else:
             use_nmjv2 = 0
+
+        if use_synoindex == "on":
+            use_synoindex = 1
+        else:
+            use_synoindex = 0
+            
+        if use_synologynotifier == "on":
+            use_synologynotifier = 1
+        else:
+            use_synologynotifier = 0
+            
+        if synologynotifier_notify_onsnatch == "on":
+            synologynotifier_notify_onsnatch = 1
+        else:
+            synologynotifier_notify_onsnatch = 0
+
+        if synologynotifier_notify_ondownload == "on":
+            synologynotifier_notify_ondownload = 1
+        else:
+            synologynotifier_notify_ondownload = 0
+
+        if synologynotifier_notify_onsubtitledownload == "on":
+            synologynotifier_notify_onsubtitledownload = 1
+        else:
+            synologynotifier_notify_onsubtitledownload = 0
 
         if use_trakt == "on":
             use_trakt = 1
         else:
             use_trakt = 0
 
+        if trakt_remove_watchlist == "on":
+            trakt_remove_watchlist = 1
+        else:
+            trakt_remove_watchlist = 0
+
+        if trakt_use_watchlist == "on":
+            trakt_use_watchlist = 1
+        else:
+            trakt_use_watchlist = 0
+
+        if trakt_start_paused == "on":
+            trakt_start_paused = 1
+        else:
+            trakt_start_paused = 0
+
+        if email_notify_onsnatch == "on":
+            email_notify_onsnatch = 1
+        else:
+            email_notify_onsnatch = 0
+
+        if email_notify_ondownload == "on":
+            email_notify_ondownload = 1
+        else:
+            email_notify_ondownload = 0
+
+        if email_notify_onsubtitledownload == "on":
+            email_notify_onsubtitledownload = 1
+        else:
+            email_notify_onsubtitledownload = 0
+
+        if use_email == "on":
+            use_email = 1
+        else:
+            use_email = 0
+
+        if email_tls == "on":
+            email_tls = 1
+        else:
+            email_tls = 0
+
+        # Update per show notifications, if provided
+        if int(email_show) >= 0:
+            mydb = db.DBConnection()
+            mydb.action("UPDATE tv_shows SET notify_list = ? WHERE show_id = ?", (email_show_list, int(email_show)))
+
         if use_pytivo == "on":
             use_pytivo = 1
         else:
             use_pytivo = 0
-
+            
         if pytivo_notify_onsnatch == "on":
             pytivo_notify_onsnatch = 1
         else:
@@ -1338,6 +1758,11 @@ class ConfigNotifications:
             pytivo_notify_ondownload = 1
         else:
             pytivo_notify_ondownload = 0
+
+        if pytivo_notify_onsubtitledownload == "on":
+            pytivo_notify_onsubtitledownload = 1
+        else:
+            pytivo_notify_onsubtitledownload = 0
 
         if pytivo_update_library == "on":
             pytivo_update_library = 1
@@ -1359,9 +1784,35 @@ class ConfigNotifications:
         else:
             nma_notify_ondownload = 0
 
+        if nma_notify_onsubtitledownload == "on":
+            nma_notify_onsubtitledownload = 1
+        else:
+            nma_notify_onsubtitledownload = 0
+
+        if use_pushalot == "on":
+            use_pushalot = 1
+        else:
+            use_pushalot = 0
+
+        if pushalot_notify_onsnatch == "on":
+            pushalot_notify_onsnatch = 1
+        else:
+            pushalot_notify_onsnatch = 0
+
+        if pushalot_notify_ondownload == "on":
+            pushalot_notify_ondownload = 1
+        else:
+            pushalot_notify_ondownload = 0
+
+        if pushalot_notify_onsubtitledownload == "on":
+            pushalot_notify_onsubtitledownload = 1
+        else:
+            pushalot_notify_onsubtitledownload = 0
+
         sickbeard.USE_XBMC = use_xbmc
         sickbeard.XBMC_NOTIFY_ONSNATCH = xbmc_notify_onsnatch
         sickbeard.XBMC_NOTIFY_ONDOWNLOAD = xbmc_notify_ondownload
+        sickbeard.XBMC_NOTIFY_ONSUBTITLEDOWNLOAD = xbmc_notify_onsubtitledownload
         sickbeard.XBMC_UPDATE_LIBRARY = xbmc_update_library
         sickbeard.XBMC_UPDATE_FULL = xbmc_update_full
         sickbeard.XBMC_UPDATE_ONLYFIRST = xbmc_update_onlyfirst
@@ -1372,6 +1823,7 @@ class ConfigNotifications:
         sickbeard.USE_PLEX = use_plex
         sickbeard.PLEX_NOTIFY_ONSNATCH = plex_notify_onsnatch
         sickbeard.PLEX_NOTIFY_ONDOWNLOAD = plex_notify_ondownload
+        sickbeard.PLEX_NOTIFY_ONSUBTITLEDOWNLOAD = plex_notify_onsubtitledownload
         sickbeard.PLEX_UPDATE_LIBRARY = plex_update_library
         sickbeard.PLEX_HOST = plex_host
         sickbeard.PLEX_SERVER_HOST = plex_server_host
@@ -1381,59 +1833,88 @@ class ConfigNotifications:
         sickbeard.USE_GROWL = use_growl
         sickbeard.GROWL_NOTIFY_ONSNATCH = growl_notify_onsnatch
         sickbeard.GROWL_NOTIFY_ONDOWNLOAD = growl_notify_ondownload
+        sickbeard.GROWL_NOTIFY_ONSUBTITLEDOWNLOAD = growl_notify_onsubtitledownload
         sickbeard.GROWL_HOST = growl_host
         sickbeard.GROWL_PASSWORD = growl_password
 
         sickbeard.USE_PROWL = use_prowl
         sickbeard.PROWL_NOTIFY_ONSNATCH = prowl_notify_onsnatch
         sickbeard.PROWL_NOTIFY_ONDOWNLOAD = prowl_notify_ondownload
+        sickbeard.PROWL_NOTIFY_ONSUBTITLEDOWNLOAD = prowl_notify_onsubtitledownload
         sickbeard.PROWL_API = prowl_api
         sickbeard.PROWL_PRIORITY = prowl_priority
 
         sickbeard.USE_TWITTER = use_twitter
         sickbeard.TWITTER_NOTIFY_ONSNATCH = twitter_notify_onsnatch
         sickbeard.TWITTER_NOTIFY_ONDOWNLOAD = twitter_notify_ondownload
+        sickbeard.TWITTER_NOTIFY_ONSUBTITLEDOWNLOAD = twitter_notify_onsubtitledownload
 
         sickbeard.USE_NOTIFO = use_notifo
         sickbeard.NOTIFO_NOTIFY_ONSNATCH = notifo_notify_onsnatch
         sickbeard.NOTIFO_NOTIFY_ONDOWNLOAD = notifo_notify_ondownload
+        sickbeard.NOTIFO_NOTIFY_ONSUBTITLEDOWNLOAD = notifo_notify_onsubtitledownload
         sickbeard.NOTIFO_USERNAME = notifo_username
         sickbeard.NOTIFO_APISECRET = notifo_apisecret
 
         sickbeard.USE_BOXCAR = use_boxcar
         sickbeard.BOXCAR_NOTIFY_ONSNATCH = boxcar_notify_onsnatch
         sickbeard.BOXCAR_NOTIFY_ONDOWNLOAD = boxcar_notify_ondownload
+        sickbeard.BOXCAR_NOTIFY_ONSUBTITLEDOWNLOAD = boxcar_notify_onsubtitledownload
         sickbeard.BOXCAR_USERNAME = boxcar_username
 
         sickbeard.USE_PUSHOVER = use_pushover
         sickbeard.PUSHOVER_NOTIFY_ONSNATCH = pushover_notify_onsnatch
         sickbeard.PUSHOVER_NOTIFY_ONDOWNLOAD = pushover_notify_ondownload
+        sickbeard.PUSHOVER_NOTIFY_ONSUBTITLEDOWNLOAD = pushover_notify_onsubtitledownload
         sickbeard.PUSHOVER_USERKEY = pushover_userkey
 
         sickbeard.USE_LIBNOTIFY = use_libnotify == "on"
         sickbeard.LIBNOTIFY_NOTIFY_ONSNATCH = libnotify_notify_onsnatch == "on"
         sickbeard.LIBNOTIFY_NOTIFY_ONDOWNLOAD = libnotify_notify_ondownload == "on"
+        sickbeard.LIBNOTIFY_NOTIFY_ONSUBTITLEDOWNLOAD = libnotify_notify_onsubtitledownload == "on"
 
         sickbeard.USE_NMJ = use_nmj
         sickbeard.NMJ_HOST = nmj_host
         sickbeard.NMJ_DATABASE = nmj_database
         sickbeard.NMJ_MOUNT = nmj_mount
 
-        sickbeard.USE_SYNOINDEX = use_synoindex
-
         sickbeard.USE_NMJv2 = use_nmjv2
         sickbeard.NMJv2_HOST = nmjv2_host
         sickbeard.NMJv2_DATABASE = nmjv2_database
         sickbeard.NMJv2_DBLOC = nmjv2_dbloc
 
+        sickbeard.USE_SYNOINDEX = use_synoindex
+        
+        sickbeard.USE_SYNOLOGYNOTIFIER = use_synologynotifier
+        sickbeard.SYNOLOGYNOTIFIER_NOTIFY_ONSNATCH = synologynotifier_notify_onsnatch
+        sickbeard.SYNOLOGYNOTIFIER_NOTIFY_ONDOWNLOAD = synologynotifier_notify_ondownload
+        sickbeard.SYNOLOGYNOTIFIER_NOTIFY_ONSUBTITLEDOWNLOAD = synologynotifier_notify_onsubtitledownload
+
         sickbeard.USE_TRAKT = use_trakt
         sickbeard.TRAKT_USERNAME = trakt_username
         sickbeard.TRAKT_PASSWORD = trakt_password
         sickbeard.TRAKT_API = trakt_api
+        sickbeard.TRAKT_REMOVE_WATCHLIST = trakt_remove_watchlist
+        sickbeard.TRAKT_USE_WATCHLIST = trakt_use_watchlist
+        sickbeard.TRAKT_METHOD_ADD = trakt_method_add
+        sickbeard.TRAKT_START_PAUSED = trakt_start_paused
+
+        sickbeard.USE_EMAIL = use_email
+        sickbeard.EMAIL_NOTIFY_ONSNATCH = email_notify_onsnatch
+        sickbeard.EMAIL_NOTIFY_ONDOWNLOAD = email_notify_ondownload
+        sickbeard.EMAIL_NOTIFY_ONSUBTITLEDOWNLOAD = email_notify_ondownload
+        sickbeard.EMAIL_HOST = email_host
+        sickbeard.EMAIL_PORT = email_port
+        sickbeard.EMAIL_FROM = email_from
+        sickbeard.EMAIL_TLS = email_tls
+        sickbeard.EMAIL_USER = email_user
+        sickbeard.EMAIL_PASSWORD = email_password
+        sickbeard.EMAIL_LIST = email_list
 
         sickbeard.USE_PYTIVO = use_pytivo
         sickbeard.PYTIVO_NOTIFY_ONSNATCH = pytivo_notify_onsnatch == "off"
         sickbeard.PYTIVO_NOTIFY_ONDOWNLOAD = pytivo_notify_ondownload == "off"
+        sickbeard.PYTIVO_NOTIFY_ONSUBTITLEDOWNLOAD = pytivo_notify_onsubtitledownload ==  "off"
         sickbeard.PYTIVO_UPDATE_LIBRARY = pytivo_update_library
         sickbeard.PYTIVO_HOST = pytivo_host
         sickbeard.PYTIVO_SHARE_NAME = pytivo_share_name
@@ -1442,8 +1923,15 @@ class ConfigNotifications:
         sickbeard.USE_NMA = use_nma
         sickbeard.NMA_NOTIFY_ONSNATCH = nma_notify_onsnatch
         sickbeard.NMA_NOTIFY_ONDOWNLOAD = nma_notify_ondownload
+        sickbeard.NMA_NOTIFY_ONSUBTITLEDOWNLOAD = nma_notify_onsubtitledownload
         sickbeard.NMA_API = nma_api
         sickbeard.NMA_PRIORITY = nma_priority
+
+        sickbeard.USE_PUSHALOT = use_pushalot
+        sickbeard.PUSHALOT_NOTIFY_ONSNATCH = pushalot_notify_onsnatch
+        sickbeard.PUSHALOT_NOTIFY_ONDOWNLOAD = pushalot_notify_ondownload
+        sickbeard.PUSHALOT_NOTIFY_ONSUBTITLEDOWNLOAD = pushalot_notify_onsubtitledownload
+        sickbeard.PUSHALOT_AUTHORIZATIONTOKEN = pushalot_authorizationtoken
 
         sickbeard.save_config()
 
@@ -1457,6 +1945,64 @@ class ConfigNotifications:
 
         redirect("/config/notifications/")
 
+class ConfigSubtitles:
+
+    @cherrypy.expose
+    def index(self):
+        t = PageTemplate(file="config_subtitles.tmpl")
+        t.submenu = ConfigMenu
+        return _munge(t)
+
+    @cherrypy.expose
+    def saveSubtitles(self, use_subtitles=None, subtitles_plugins=None, subtitles_languages=None, subtitles_dir=None, service_order=None, subtitles_history=None):
+        results = []
+
+        if use_subtitles == "on":
+            use_subtitles = 1
+            if sickbeard.subtitlesFinderScheduler.thread == None or not sickbeard.subtitlesFinderScheduler.thread.isAlive():
+                sickbeard.subtitlesFinderScheduler.initThread()
+        else:
+            use_subtitles = 0
+            sickbeard.subtitlesFinderScheduler.abort = True
+            logger.log(u"Waiting for the SUBTITLESFINDER thread to exit")
+            try:
+                sickbeard.subtitlesFinderScheduler.thread.join(5)
+            except:
+                pass
+
+        if subtitles_history == "on":
+            subtitles_history = 1
+        else: 
+            subtitles_history = 0    
+
+        sickbeard.USE_SUBTITLES = use_subtitles
+        sickbeard.SUBTITLES_LANGUAGES = [lang.alpha2 for lang in subtitles.isValidLanguage(subtitles_languages.replace(' ', '').split(','))] if subtitles_languages != ''  else ''
+        sickbeard.SUBTITLES_DIR = subtitles_dir
+        sickbeard.SUBTITLES_HISTORY = subtitles_history
+        
+        # Subtitles services
+        services_str_list = service_order.split()
+        subtitles_services_list = []
+        subtitles_services_enabled = []
+        for curServiceStr in services_str_list:
+            curService, curEnabled = curServiceStr.split(':')
+            subtitles_services_list.append(curService)
+            subtitles_services_enabled.append(int(curEnabled))
+            
+        sickbeard.SUBTITLES_SERVICES_LIST = subtitles_services_list
+        sickbeard.SUBTITLES_SERVICES_ENABLED = subtitles_services_enabled
+
+        sickbeard.save_config()
+
+        if len(results) > 0:
+            for x in results:
+                logger.log(x, logger.ERROR)
+            ui.notifications.error('Error(s) Saving Configuration',
+                        '<br />\n'.join(results))
+        else:
+            ui.notifications.message('Configuration Saved', ek.ek(os.path.join, sickbeard.CONFIG_FILE) )
+
+        redirect("/config/subtitles/")
 
 class Config:
 
@@ -1465,17 +2011,40 @@ class Config:
 
         t = PageTemplate(file="config.tmpl")
         t.submenu = ConfigMenu
+        t.hasChangeLog = False
+
+        # read changelog file, if present, and format it to be used for tooltip
+        data = []
+        if os.path.isfile('CHANGELOG.txt'):
+            t.hasChangeLog = True
+            f = ek.ek(open, 'CHANGELOG.txt')
+            data = f.readlines()
+            f.close()
+
+            numLines = 0
+            finalData = []
+            for x in data:
+                x = x.decode('utf-8').replace('\n', '<br/>')
+                # why 3? we want to skip to the acutal changelog details
+                if numLines > 3:
+                    finalData.append(x)
+                numLines += 1
+            result = "".join(finalData)
+            t.logLines = re.escape(result)        
+        
         return _munge(t)
 
     general = ConfigGeneral()
 
     search = ConfigSearch()
-
+    
     postProcessing = ConfigPostProcessing()
 
     providers = ConfigProviders()
 
     notifications = ConfigNotifications()
+
+    subtitles = ConfigSubtitles()
 
 def haveXBMC():
     return sickbeard.USE_XBMC and sickbeard.XBMC_UPDATE_LIBRARY
@@ -1603,16 +2172,16 @@ class NewHomeAddShows:
     def massAddTable(self, rootDir=None):
         t = PageTemplate(file="home_massAddTable.tmpl")
         t.submenu = HomeMenu()
-
+        
         myDB = db.DBConnection()
 
         if not rootDir:
-            return "No folders selected."
+            return "No folders selected." 
         elif type(rootDir) != list:
             root_dirs = [rootDir]
         else:
             root_dirs = rootDir
-
+        
         root_dirs = [urllib.unquote_plus(x) for x in root_dirs]
 
         default_index = int(sickbeard.ROOT_DIRS.split('|')[0])
@@ -1621,9 +2190,9 @@ class NewHomeAddShows:
             if tmp in root_dirs:
                 root_dirs.remove(tmp)
                 root_dirs = [tmp]+root_dirs
-
+        
         dir_list = []
-
+        
         for root_dir in root_dirs:
             try:
                 file_list = ek.ek(os.listdir, root_dir)
@@ -1635,36 +2204,36 @@ class NewHomeAddShows:
                 cur_path = ek.ek(os.path.normpath, ek.ek(os.path.join, root_dir, cur_file))
                 if not ek.ek(os.path.isdir, cur_path):
                     continue
-
+                
                 cur_dir = {
                            'dir': cur_path,
                            'display_dir': '<b>'+ek.ek(os.path.dirname, cur_path)+os.sep+'</b>'+ek.ek(os.path.basename, cur_path),
                            }
-
+                
                 # see if the folder is in XBMC already
                 dirResults = myDB.select("SELECT * FROM tv_shows WHERE location = ?", [cur_path])
-
+                
                 if dirResults:
                     cur_dir['added_already'] = True
                 else:
                     cur_dir['added_already'] = False
-
+                
                 dir_list.append(cur_dir)
-
+                
                 tvdb_id = ''
                 show_name = ''
                 for cur_provider in sickbeard.metadata_provider_dict.values():
                     (tvdb_id, show_name) = cur_provider.retrieveShowMetadata(cur_path)
                     if tvdb_id and show_name:
                         break
-
+                
                 cur_dir['existing_info'] = (tvdb_id, show_name)
-
+                
                 if tvdb_id and helpers.findCertainShow(sickbeard.showList, tvdb_id):
-                    cur_dir['added_already'] = True
+                    cur_dir['added_already'] = True 
 
         t.dirList = dir_list
-
+        
         return _munge(t)
 
     @cherrypy.expose
@@ -1675,94 +2244,94 @@ class NewHomeAddShows:
         """
         t = PageTemplate(file="home_newShow.tmpl")
         t.submenu = HomeMenu()
-
+        
         show_dir, tvdb_id, show_name = self.split_extra_show(show_to_add)
-
+        
         if tvdb_id and show_name:
             use_provided_info = True
         else:
             use_provided_info = False
-
+        
         # tell the template whether we're giving it show name & TVDB ID
         t.use_provided_info = use_provided_info
-
-        # use the given show_dir for the tvdb search if available
+        
+        # use the given show_dir for the tvdb search if available 
         if not show_dir:
             t.default_show_name = ''
         elif not show_name:
             t.default_show_name = ek.ek(os.path.basename, ek.ek(os.path.normpath, show_dir)).replace('.',' ')
         else:
             t.default_show_name = show_name
-
+        
         # carry a list of other dirs if given
         if not other_shows:
             other_shows = []
         elif type(other_shows) != list:
             other_shows = [other_shows]
-
+        
         if use_provided_info:
             t.provided_tvdb_id = tvdb_id
             t.provided_tvdb_name = show_name
-
+            
         t.provided_show_dir = show_dir
         t.other_shows = other_shows
-
+        
         return _munge(t)
 
     @cherrypy.expose
     def addNewShow(self, whichSeries=None, tvdbLang="en", rootDir=None, defaultStatus=None,
-                   anyQualities=None, bestQualities=None, flatten_folders=None, fullShowPath=None,
-                   other_shows=None, skipShow=None):
+                   anyQualities=None, bestQualities=None, flatten_folders=None, subtitles=None,
+                   fullShowPath=None, other_shows=None, skipShow=None):
         """
         Receive tvdb id, dir, and other options and create a show from them. If extra show dirs are
         provided then it forwards back to newShow, if not it goes to /home.
         """
-
+        
         # grab our list of other dirs if given
         if not other_shows:
             other_shows = []
         elif type(other_shows) != list:
             other_shows = [other_shows]
-
-        def finishAddShow():
+            
+        def finishAddShow(): 
             # if there are no extra shows then go home
             if not other_shows:
                 redirect('/home')
-
+            
             # peel off the next one
             next_show_dir = other_shows[0]
             rest_of_show_dirs = other_shows[1:]
-
+            
             # go to add the next show
             return self.newShow(next_show_dir, rest_of_show_dirs)
-
+        
         # if we're skipping then behave accordingly
         if skipShow:
             return finishAddShow()
-
+        
         # sanity check on our inputs
         if (not rootDir and not fullShowPath) or not whichSeries:
             return "Missing params, no tvdb id or folder:"+repr(whichSeries)+" and "+repr(rootDir)+"/"+repr(fullShowPath)
-
+        
         # figure out what show we're adding and where
         series_pieces = whichSeries.partition('|')
         if len(series_pieces) < 3:
             return "Error with show selection."
-
+        
         tvdb_id = int(series_pieces[0])
         show_name = series_pieces[2]
-
+        
         # use the whole path if it's given, or else append the show name to the root dir to get the full show path
         if fullShowPath:
             show_dir = ek.ek(os.path.normpath, fullShowPath)
         else:
             show_dir = ek.ek(os.path.join, rootDir, helpers.sanitizeFileName(show_name))
-
+        
         # blanket policy - if the dir exists you should have used "add existing show" numbnuts
         if ek.ek(os.path.isdir, show_dir) and not fullShowPath:
             ui.notifications.error("Unable to add show", "Folder "+show_dir+" exists already")
             redirect('/home/addShows/existingShows')
-
+        
         # don't create show dir if config says not to
         if sickbeard.ADD_SHOWS_WO_DIR:
             logger.log(u"Skipping initial creation of "+show_dir+" due to config.ini setting")
@@ -1780,7 +2349,12 @@ class NewHomeAddShows:
             flatten_folders = 1
         else:
             flatten_folders = 0
-
+        
+        if subtitles == "on":
+            subtitles = 1
+        else:
+            subtitles = 0
+        
         if not anyQualities:
             anyQualities = []
         if not bestQualities:
@@ -1789,23 +2363,23 @@ class NewHomeAddShows:
             anyQualities = [anyQualities]
         if type(bestQualities) != list:
             bestQualities = [bestQualities]
-        newQuality = Quality.combineQualities(map(int, anyQualities), map(int, bestQualities))
-
+        newQuality = Quality.combineQualities(map(helpers.tryInt, anyQualities), map(helpers.tryInt, bestQualities))
+        
         # add the show
-        sickbeard.showQueueScheduler.action.addShow(tvdb_id, show_dir, int(defaultStatus), newQuality, flatten_folders, tvdbLang) #@UndefinedVariable
+        sickbeard.showQueueScheduler.action.addShow(tvdb_id, show_dir, int(defaultStatus), newQuality, flatten_folders, subtitles, tvdbLang) #@UndefinedVariable
         ui.notifications.message('Show added', 'Adding the specified show into '+show_dir)
 
         return finishAddShow()
-
+        
 
     @cherrypy.expose
     def existingShows(self):
         """
-        Prints out the page to add existing shows from a root dir
+        Prints out the page to add existing shows from a root dir 
         """
         t = PageTemplate(file="home_addExistingShow.tmpl")
         t.submenu = HomeMenu()
-
+        
         return _munge(t)
 
     def split_extra_show(self, extra_show):
@@ -1817,7 +2391,7 @@ class NewHomeAddShows:
         show_dir = split_vals[0]
         tvdb_id = split_vals[1]
         show_name = '|'.join(split_vals[2:])
-
+        
         return (show_dir, tvdb_id, show_name)
 
     @cherrypy.expose
@@ -1832,14 +2406,14 @@ class NewHomeAddShows:
             shows_to_add = []
         elif type(shows_to_add) != list:
             shows_to_add = [shows_to_add]
-
+        
         shows_to_add = [urllib.unquote_plus(x) for x in shows_to_add]
-
+        
         if promptForSettings == "on":
             promptForSettings = 1
         else:
             promptForSettings = 0
-
+        
         tvdb_id_given = []
         dirs_only = []
         # separate all the ones with TVDB IDs
@@ -1856,16 +2430,16 @@ class NewHomeAddShows:
         # if they want me to prompt for settings then I will just carry on to the newShow page
         if promptForSettings and shows_to_add:
             return self.newShow(shows_to_add[0], shows_to_add[1:])
-
+        
         # if they don't want me to prompt for settings then I can just add all the nfo shows now
         num_added = 0
         for cur_show in tvdb_id_given:
             show_dir, tvdb_id, show_name = cur_show
 
             # add the show
-            sickbeard.showQueueScheduler.action.addShow(tvdb_id, show_dir, SKIPPED, sickbeard.QUALITY_DEFAULT, sickbeard.FLATTEN_FOLDERS_DEFAULT) #@UndefinedVariable
+            sickbeard.showQueueScheduler.action.addShow(tvdb_id, show_dir, SKIPPED, sickbeard.QUALITY_DEFAULT, sickbeard.FLATTEN_FOLDERS_DEFAULT, sickbeard.SUBTITLES_DEFAULT) #@UndefinedVariable
             num_added += 1
-
+         
         if num_added:
             ui.notifications.message("Shows Added", "Automatically added "+str(num_added)+" from their existing metadata files")
 
@@ -1915,7 +2489,7 @@ class ErrorLogs:
             data = f.readlines()
             f.close()
 
-        regex =  "^(\w{3})\-(\d\d)\s*(\d\d)\:(\d\d):(\d\d)\s*([A-Z]+)\s*(.+?)\s*\:\:\s*(.*)$"
+        regex =  "^(\w{3})\\.?-(\d\d)\s*(\d\d)\:(\d\d):(\d\d)\s*([A-Z]+)\s*(.+?)\s*\:\:\s*(.*)$"
 
         finalData = []
 
@@ -1925,7 +2499,7 @@ class ErrorLogs:
 
         for x in reversed(data):
 
-            x = x.decode('utf-8')
+            x = x.decode('utf-8', 'replace')
             match = re.match(regex, x)
 
             if match:
@@ -1999,6 +2573,17 @@ class Home:
                 return "Authentication failed. SABnzbd expects '"+accesMsg+"' as authentication method"
         else:
             return "Unable to connect to host"
+
+    @cherrypy.expose
+    def testTorrent(self, torrent_method=None, host=None, username=None, password=None):
+        if not host.endswith("/"):
+            host = host + "/"
+        
+        client = clients.getClientIstance(torrent_method)
+        
+        connection, accesMsg = client(host, username, password).testAuthentication()
+
+        return accesMsg     
 
     @cherrypy.expose
     def testGrowl(self, host=None, password=None):
@@ -2144,7 +2729,7 @@ class Home:
     @cherrypy.expose
     def testNMJv2(self, host=None):
         cherrypy.response.headers['Cache-Control'] = "max-age=0,no-cache,no-store"
-
+        
         result = notifiers.nmjv2_notifier.test_notify(urllib.unquote_plus(host))
         if result:
             return "Test notice sent successfully to " + urllib.unquote_plus(host)
@@ -2152,9 +2737,9 @@ class Home:
             return "Test notice failed to " + urllib.unquote_plus(host)
 
     @cherrypy.expose
-    def settingsNMJv2(self, host=None, dbloc=None, instance=None):
+    def settingsNMJv2(self, host=None, dbloc=None,instance=None):
         cherrypy.response.headers['Cache-Control'] = "max-age=0,no-cache,no-store"
-        result = notifiers.nmjv2_notifier.notify_settings(urllib.unquote_plus(host), dbloc, instance)
+        result = notifiers.nmjv2_notifier.notify_settings(urllib.unquote_plus(host),dbloc,instance)
         if result:
             return '{"message": "NMJ Database found at: %(host)s", "database": "%(database)s"}' % {"host": host, "database": sickbeard.NMJv2_DATABASE}
         else:
@@ -2171,14 +2756,47 @@ class Home:
             return "Test notice failed to Trakt"
 
     @cherrypy.expose
-    def testNMA(self, nma_api=None, nma_priority=0):
+    def loadShowNotifyLists(self):
         cherrypy.response.headers['Cache-Control'] = "max-age=0,no-cache,no-store"
 
+        mydb = db.DBConnection()
+        rows = mydb.select("SELECT show_id, show_name, notify_list FROM tv_shows")
+        data = {}
+        size = 0
+        for r in rows:
+            data[r['show_id']] = {'id': r['show_id'], 'name': r['show_name'], 'list': r['notify_list']}
+            size += 1
+        data['_size'] = size
+        return json.dumps(data)
+
+    @cherrypy.expose
+    def testEmail(self, host=None, port=None, smtp_from=None, use_tls=None, user=None, pwd=None, to=None):
+        cherrypy.response.headers['Cache-Control'] = "max-age=0,no-cache,no-store"
+
+        if notifiers.email_notifier.test_notify(host, port, smtp_from, use_tls, user, pwd, to):
+            return 'Test email sent successfully! Check inbox.'
+        else:
+            return 'ERROR: %s' % notifiers.email_notifier.last_err
+
+    @cherrypy.expose
+    def testNMA(self, nma_api=None, nma_priority=0):
+        cherrypy.response.headers['Cache-Control'] = "max-age=0,no-cache,no-store"
+        
         result = notifiers.nma_notifier.test_notify(nma_api, nma_priority)
         if result:
             return "Test NMA notice sent successfully"
         else:
             return "Test NMA notice failed"
+
+    @cherrypy.expose
+    def testPushalot(self, authorizationToken=None):
+        cherrypy.response.headers['Cache-Control'] = "max-age=0,no-cache,no-store"
+
+        result = notifiers.pushalot_notifier.test_notify(authorizationToken)
+        if result:
+            return "Pushalot notification succeeded. Check your Pushalot clients to make sure it worked"
+        else:
+            return "Error sending Pushalot notification"
 
     @cherrypy.expose
     def shutdown(self, pid=None):
@@ -2234,6 +2852,8 @@ class Home:
             if showObj == None:
                 return _genericMessage("Error", "Show not in show list")
 
+        showObj.exceptions = scene_exceptions.get_scene_exceptions(showObj.tvdbid)      
+
         myDB = db.DBConnection()
 
         seasonResults = myDB.select(
@@ -2264,12 +2884,18 @@ class Home:
 
         elif sickbeard.showQueueScheduler.action.isBeingRefreshed(showObj): #@UndefinedVariable
             show_message = 'The episodes below are currently being refreshed from disk'
+            
+        elif sickbeard.showQueueScheduler.action.isBeingSubtitled(showObj): #@UndefinedVariable
+            show_message = 'Currently downloading subtitles for this show'
 
         elif sickbeard.showQueueScheduler.action.isInRefreshQueue(showObj): #@UndefinedVariable
             show_message = 'This show is queued to be refreshed.'
 
         elif sickbeard.showQueueScheduler.action.isInUpdateQueue(showObj): #@UndefinedVariable
             show_message = 'This show is queued and awaiting an update.'
+            
+        elif sickbeard.showQueueScheduler.action.isInSubtitleQueue(showObj): #@UndefinedVariable
+            show_message = 'This show is queued and awaiting subtitles download.'
 
         if not sickbeard.showQueueScheduler.action.isBeingAdded(showObj): #@UndefinedVariable
             if not sickbeard.showQueueScheduler.action.isBeingUpdated(showObj): #@UndefinedVariable
@@ -2278,7 +2904,9 @@ class Home:
                 t.submenu.append({ 'title': 'Force Full Update',    'path': 'home/updateShow?show=%d&amp;force=1'%showObj.tvdbid })
                 t.submenu.append({ 'title': 'Update show in XBMC',  'path': 'home/updateXBMC?showName=%s'%urllib.quote_plus(showObj.name.encode('utf-8')), 'requires': haveXBMC })
                 t.submenu.append({ 'title': 'Preview Rename',       'path': 'home/testRename?show=%d'%showObj.tvdbid })
-
+                if sickbeard.USE_SUBTITLES and not sickbeard.showQueueScheduler.action.isBeingSubtitled(showObj) and showObj.subtitles:
+                    t.submenu.append({ 'title': 'Download Subtitles', 'path': 'home/subtitleShow?show=%d'%showObj.tvdbid })
+        
         t.show = showObj
         t.sqlResults = sqlResults
         t.seasonResults = seasonResults
@@ -2300,12 +2928,14 @@ class Home:
             epCounts[curEpCat] += 1
 
         def titler(x):
-            if not x:
+            if not x  or sickbeard.SORT_ARTICLE:
                 return x
             if x.lower().startswith('a '):
-                    x = x[2:]
+                x = x[2:]
+            if x.lower().startswith('an '):
+                x = x[3:]
             elif x.lower().startswith('the '):
-                    x = x[4:]
+                x = x[4:]
             return x
         t.sortedShowList = sorted(sickbeard.showList, lambda x, y: cmp(titler(x.name), titler(y.name)))
 
@@ -2320,7 +2950,7 @@ class Home:
         return result['description'] if result else 'Episode not found.'
 
     @cherrypy.expose
-    def editShow(self, show=None, location=None, anyQualities=[], bestQualities=[], flatten_folders=None, paused=None, directCall=False, air_by_date=None, tvdbLang=None):
+    def editShow(self, show=None, location=None, anyQualities=[], bestQualities=[], exceptions_list=[], flatten_folders=None, paused=None, directCall=False, air_by_date=None, tvdbLang=None, subtitles=None):
 
         if show == None:
             errString = "Invalid show ID: "+str(show)
@@ -2337,6 +2967,8 @@ class Home:
                 return [errString]
             else:
                 return _genericMessage("Error", errString)
+
+        showObj.exceptions = scene_exceptions.get_scene_exceptions(showObj.tvdbid)
 
         if not location and not anyQualities and not bestQualities and not flatten_folders:
 
@@ -2363,6 +2995,12 @@ class Home:
             air_by_date = 1
         else:
             air_by_date = 0
+            
+        if subtitles == "on":
+            subtitles = 1
+        else:
+            subtitles = 0
+
 
         if tvdbLang and tvdbLang in tvdb_api.Tvdb().config['valid_languages']:
             tvdb_lang = tvdbLang
@@ -2380,6 +3018,18 @@ class Home:
 
         if type(bestQualities) != list:
             bestQualities = [bestQualities]
+            
+        if type(exceptions_list) != list:
+            exceptions_list = [exceptions_list]            
+
+        #If directCall from mass_edit_update no scene exceptions handling
+        if directCall:            
+            do_update_exceptions = False
+        else:
+            if set(exceptions_list) == set(showObj.exceptions):
+                do_update_exceptions = False
+            else:
+                do_update_exceptions = True
 
         errors = []
         with showObj.lock:
@@ -2396,6 +3046,7 @@ class Home:
 
             showObj.paused = paused
             showObj.air_by_date = air_by_date
+            showObj.subtitles = subtitles
             showObj.lang = tvdb_lang
 
             # if we change location clear the db of episodes, change it, write to db, and rescan
@@ -2429,6 +3080,13 @@ class Home:
                 time.sleep(1)
             except exceptions.CantUpdateException, e:
                 errors.append("Unable to force an update on the show.")
+
+        if do_update_exceptions:
+            try:
+                scene_exceptions.update_scene_exceptions(showObj.tvdbid, exceptions_list) #@UndefinedVariable
+                time.sleep(1)
+            except exceptions.CantUpdateException, e:
+                errors.append("Unable to force an update on scene exceptions of the show.")
 
         if directCall:
             return errors
@@ -2504,13 +3162,34 @@ class Home:
         redirect("/home/displayShow?show=" + str(showObj.tvdbid))
 
     @cherrypy.expose
+    def subtitleShow(self, show=None, force=0):
+
+        if show == None:
+            return _genericMessage("Error", "Invalid show ID")
+
+        showObj = sickbeard.helpers.findCertainShow(sickbeard.showList, int(show))
+
+        if showObj == None:
+            return _genericMessage("Error", "Unable to find the specified show")
+
+        # search and download subtitles
+        sickbeard.showQueueScheduler.action.downloadSubtitles(showObj, bool(force)) #@UndefinedVariable
+
+        time.sleep(3)
+
+        redirect("/home/displayShow?show="+str(showObj.tvdbid))
+
+    
+    @cherrypy.expose
     def updateXBMC(self, showName=None):
+
+        # only send update to first host in the list -- workaround for xbmc sql backend users
         if sickbeard.XBMC_UPDATE_ONLYFIRST:
             # only send update to first host in the list -- workaround for xbmc sql backend users
             host = sickbeard.XBMC_HOST.split(",")[0].strip()
         else:
             host = sickbeard.XBMC_HOST
-
+                 
         if notifiers.xbmc_notifier.update_library(showName=showName):
             ui.notifications.message("Library update command sent to XBMC host(s): " + host)
         else:
@@ -2572,7 +3251,7 @@ class Home:
                         ep_segment = str(epObj.airdate)[:7]
                     else:
                         ep_segment = epObj.season
-
+    
                     if ep_segment not in segment_list:
                         segment_list.append(ep_segment)
 
@@ -2638,9 +3317,8 @@ class Home:
                         if cur_related_ep in ep_obj_rename_list:
                             have_already = True
                             break
-                    if not have_already:
-                        ep_obj_rename_list.append(cur_ep_obj)
-
+                        if not have_already:
+                            ep_obj_rename_list.append(cur_ep_obj)
                 else:
                     ep_obj_rename_list.append(cur_ep_obj)
 
@@ -2677,18 +3355,18 @@ class Home:
 
         if eps == None:
             redirect("/home/displayShow?show=" + show)
-
+            
         for curEp in eps.split('|'):
 
             epInfo = curEp.split('x')
-
+            
             # this is probably the worst possible way to deal with double eps but I've kinda painted myself into a corner here with this stupid database
             ep_result = myDB.select("SELECT * FROM tv_episodes WHERE showid = ? AND season = ? AND episode = ? AND 5=5", [show, epInfo[0], epInfo[1]])
             if not ep_result:
                 logger.log(u"Unable to find an episode for "+curEp+", skipping", logger.WARNING)
                 continue
             related_eps_result = myDB.select("SELECT * FROM tv_episodes WHERE location = ? AND episode != ?", [ep_result[0]["location"], epInfo[1]])
-
+            
             root_ep_obj = show_obj.getEpisode(int(epInfo[0]), int(epInfo[1]))
             for cur_related_ep in related_eps_result:
                 related_ep_obj = show_obj.getEpisode(int(cur_related_ep["season"]), int(cur_related_ep["episode"]))
@@ -2699,10 +3377,11 @@ class Home:
 
         redirect("/home/displayShow?show=" + show)
 
+
     @cherrypy.expose
     def searchEpisode(self, show=None, season=None, episode=None):
 
-        # retrieve the episode object and fail if we can't get one
+        # retrieve the episode object and fail if we can't get one 
         ep_obj = _getEpisode(show, season, episode)
         if isinstance(ep_obj, str):
             return json.dumps({'result': 'failure'})
@@ -2717,18 +3396,88 @@ class Home:
 
         # return the correct json value
         if ep_queue_item.success:
-            return json.dumps({'result': statusStrings[ep_obj.status]})
+            #Find the quality class for the episode
+            quality_class = Quality.qualityStrings[Quality.UNKNOWN]
+            ep_status, ep_quality = Quality.splitCompositeStatus(ep_obj.status)
+            for x in (SD, HD720p, HD1080p):
+                if ep_quality in Quality.splitQuality(x)[0]: 
+                    quality_class = qualityPresetStrings[x]
+                    break 
+                
+            return json.dumps({'result': statusStrings[ep_obj.status], 
+                               'quality': quality_class 
+                               })
 
         return json.dumps({'result': 'failure'})
+    
+    @cherrypy.expose
+    def searchEpisodeSubtitles(self, show=None, season=None, episode=None):
 
-class UI:
+        # retrieve the episode object and fail if we can't get one 
+        ep_obj = _getEpisode(show, season, episode)
+        if isinstance(ep_obj, str):
+            return json.dumps({'result': 'failure'})
+
+        # try do download subtitles for that episode
+        previous_subtitles = ep_obj.subtitles
+        try:
+            subtitles = ep_obj.downloadSubtitles()
+            
+            if sickbeard.SUBTITLES_DIR:
+                for video in subtitles:
+                    subs_new_path = ek.ek(os.path.join, os.path.dirname(video.path), sickbeard.SUBTITLES_DIR)
+                    dir_exists = helpers.makeDir(subs_new_path)
+                    if not dir_exists:
+                        logger.log(u"Unable to create subtitles folder "+subs_new_path, logger.ERROR)
+                    else:
+                        helpers.chmodAsParent(subs_new_path)    
+                    
+                    for subtitle in subtitles.get(video):
+                        new_file_path = ek.ek(os.path.join, subs_new_path, os.path.basename(subtitle.path))
+                        helpers.moveFile(subtitle.path, new_file_path)
+                        helpers.chmodAsParent(new_file_path)
+            else:
+                for video in subtitles:
+                    for subtitle in subtitles.get(video):
+                        helpers.chmodAsParent(subtitle.path)            
+        except:
+            return json.dumps({'result': 'failure'})
+
+        # return the correct json value
+        if previous_subtitles != ep_obj.subtitles:
+            status = 'New subtitles downloaded: %s' % ' '.join(["<img src='"+sickbeard.WEB_ROOT+"/images/flags/"+subliminal.language.Language(x).alpha2+".png' alt='"+subliminal.language.Language(x).name+"'/>" for x in sorted(list(set(ep_obj.subtitles).difference(previous_subtitles)))])
+        else:
+            status = 'No subtitles downloaded'
+        ui.notifications.message('Subtitles Search', status)
+        return json.dumps({'result': status, 'subtitles': ','.join([x for x in ep_obj.subtitles])})
 
     @cherrypy.expose
-    def add_message(self):
+    def mergeEpisodeSubtitles(self, show=None, season=None, episode=None):
 
+        # retrieve the episode object and fail if we can't get one 
+        ep_obj = _getEpisode(show, season, episode)
+        if isinstance(ep_obj, str):
+            return json.dumps({'result': 'failure'})
+
+        # try do merge subtitles for that episode
+        try:
+            ep_obj.mergeSubtitles()
+        except Exception as e:
+            return json.dumps({'result': 'failure', 'exception': str(e)})
+
+        # return the correct json value
+        status = 'Subtitles merged successfully '
+        ui.notifications.message('Merge Subtitles', status)
+        return json.dumps({'result': 'ok'})
+
+class UI:
+    
+    @cherrypy.expose
+    def add_message(self):
+        
         ui.notifications.message('Test 1', 'This is test number 1')
         ui.notifications.error('Test 2', 'This is test number 2')
-
+        
         return "ok"
 
     @cherrypy.expose
@@ -2743,7 +3492,7 @@ class UI:
 
         return json.dumps(messages)
 
-
+   
 class WebInterface:
 
     @cherrypy.expose
@@ -2754,12 +3503,13 @@ class WebInterface:
     @cherrypy.expose
     def showPoster(self, show=None, which=None):
 
-        if which == 'poster':
+        #Redirect initial poster/banner thumb to default images       
+        if which[0:6] == 'poster':
             default_image_name = 'poster.png'
         else:
             default_image_name = 'banner.png'
 
-        default_image_path = ek.ek(os.path.join, sickbeard.PROG_DIR, 'data', 'images', default_image_name)
+        default_image_path = ek.ek(os.path.join, sickbeard.PROG_DIR, 'gui', 'slick', 'images', default_image_name)
         if show is None:
             return cherrypy.lib.static.serve_file(default_image_path, content_type="image/png")
         else:
@@ -2769,101 +3519,147 @@ class WebInterface:
             return cherrypy.lib.static.serve_file(default_image_path, content_type="image/png")
 
         cache_obj = image_cache.ImageCache()
-
+        
         if which == 'poster':
             image_file_name = cache_obj.poster_path(showObj.tvdbid)
-        # this is for 'banner' but also the default case
-        else:
+        if which == 'poster_thumb':
+            image_file_name = cache_obj.poster_thumb_path(showObj.tvdbid)
+        if which == 'banner':
             image_file_name = cache_obj.banner_path(showObj.tvdbid)
+        if which == 'banner_thumb':     
+            image_file_name = cache_obj.banner_thumb_path(showObj.tvdbid)
 
         if ek.ek(os.path.isfile, image_file_name):
-            # use startup argument to prevent using PIL even if installed
-            if sickbeard.NO_RESIZE:
-                return cherrypy.lib.static.serve_file(image_file_name, content_type="image/jpeg")
-            try:
-                from PIL import Image
-                from cStringIO import StringIO
-            except ImportError: # PIL isn't installed
-                return cherrypy.lib.static.serve_file(image_file_name, content_type="image/jpeg")
-            else:
-                im = Image.open(image_file_name)
-                if im.mode == 'P': # Convert GIFs to RGB
-                    im = im.convert('RGB')
-                if which == 'banner':
-                    size = 606, 112
-                elif which == 'poster':
-                    size = 136, 200
-                else:
-                    return cherrypy.lib.static.serve_file(image_file_name, content_type="image/jpeg")
-                im = im.resize(size, Image.ANTIALIAS)
-                imgbuffer = StringIO()
-                im.save(imgbuffer, 'JPEG', quality=85)
-                cherrypy.response.headers['Content-Type'] = 'image/jpeg'
-                return imgbuffer.getvalue()
+            return cherrypy.lib.static.serve_file(image_file_name, content_type="image/jpeg")
         else:
             return cherrypy.lib.static.serve_file(default_image_path, content_type="image/png")
 
     @cherrypy.expose
+    def setHomeLayout(self, layout):
+
+        if layout not in ('poster', 'banner', 'simple'):
+            layout = 'poster'
+
+        sickbeard.HOME_LAYOUT = layout
+            
+        redirect("/home")  
+    
+    @cherrypy.expose
+    def toggleDisplayShowSpecials(self, show):
+
+        sickbeard.DISPLAY_SHOW_SPECIALS = not sickbeard.DISPLAY_SHOW_SPECIALS
+        
+        redirect("/home/displayShow?show=" + show)
+    
+    @cherrypy.expose
     def setComingEpsLayout(self, layout):
         if layout not in ('poster', 'banner', 'list'):
             layout = 'banner'
-
+        
         sickbeard.COMING_EPS_LAYOUT = layout
-
+        
         redirect("/comingEpisodes")
 
     @cherrypy.expose
     def toggleComingEpsDisplayPaused(self):
-
+        
         sickbeard.COMING_EPS_DISPLAY_PAUSED = not sickbeard.COMING_EPS_DISPLAY_PAUSED
-
+        
         redirect("/comingEpisodes")
 
     @cherrypy.expose
     def setComingEpsSort(self, sort):
         if sort not in ('date', 'network', 'show'):
             sort = 'date'
-
+        
         sickbeard.COMING_EPS_SORT = sort
-
+        
         redirect("/comingEpisodes")
 
     @cherrypy.expose
     def comingEpisodes(self, layout="None"):
 
-        myDB = db.DBConnection()
+        # get local timezone and load network timezones
+        sb_timezone = tz.tzlocal()
+        network_dict = network_timezones.load_network_dict()
 
-        today = datetime.date.today().toordinal()
-        next_week = (datetime.date.today() + datetime.timedelta(days=7)).toordinal()
-        recently = (datetime.date.today() - datetime.timedelta(days=3)).toordinal()
+        myDB = db.DBConnection()
+        
+        today1 = datetime.date.today()
+        today = today1.toordinal()
+        next_week1 = (datetime.date.today() + datetime.timedelta(days=7))
+        next_week = next_week1.toordinal()
+        recently = (datetime.date.today() - datetime.timedelta(days=sickbeard.COMING_EPS_MISSED_RANGE)).toordinal()
 
         done_show_list = []
         qualList = Quality.DOWNLOADED + Quality.SNATCHED + [ARCHIVED, IGNORED]
-        sql_results = myDB.select("SELECT *, tv_shows.status as show_status FROM tv_episodes, tv_shows WHERE season != 0 AND airdate >= ? AND airdate < ? AND tv_shows.tvdb_id = tv_episodes.showid AND tv_episodes.status NOT IN ("+','.join(['?']*len(qualList))+")", [today, next_week] + qualList)
-        for cur_result in sql_results:
-            done_show_list.append(int(cur_result["showid"]))
+        sql_results1 = myDB.select("SELECT *, 0 as localtime, tv_shows.status as show_status FROM tv_episodes, tv_shows WHERE season != 0 AND airdate >= ? AND airdate < ? AND tv_shows.tvdb_id = tv_episodes.showid AND tv_episodes.status NOT IN ("+','.join(['?']*len(qualList))+")", [today, next_week] + qualList)
+        for cur_result in sql_results1:
+            done_show_list.append(helpers.tryInt(cur_result["showid"]))
 
-        more_sql_results = myDB.select("SELECT *, tv_shows.status as show_status FROM tv_episodes outer_eps, tv_shows WHERE season != 0 AND showid NOT IN ("+','.join(['?']*len(done_show_list))+") AND tv_shows.tvdb_id = outer_eps.showid AND airdate = (SELECT airdate FROM tv_episodes inner_eps WHERE inner_eps.showid = outer_eps.showid AND inner_eps.airdate >= ? ORDER BY inner_eps.airdate ASC LIMIT 1) AND outer_eps.status NOT IN ("+','.join(['?']*len(Quality.DOWNLOADED+Quality.SNATCHED))+")", done_show_list + [next_week] + Quality.DOWNLOADED + Quality.SNATCHED)
-        sql_results += more_sql_results
+        more_sql_results = myDB.select("SELECT *, 0 as localtime, tv_shows.status as show_status FROM tv_episodes outer_eps, tv_shows WHERE season != 0 AND showid NOT IN ("+','.join(['?']*len(done_show_list))+") AND tv_shows.tvdb_id = outer_eps.showid AND airdate = (SELECT airdate FROM tv_episodes inner_eps WHERE inner_eps.showid = outer_eps.showid AND inner_eps.airdate >= ? ORDER BY inner_eps.airdate ASC LIMIT 1) AND outer_eps.status NOT IN ("+','.join(['?']*len(Quality.DOWNLOADED+Quality.SNATCHED))+")", done_show_list + [next_week] + Quality.DOWNLOADED + Quality.SNATCHED)
+        sql_results1 += more_sql_results
 
-        more_sql_results = myDB.select("SELECT *, tv_shows.status as show_status FROM tv_episodes, tv_shows WHERE season != 0 AND tv_shows.tvdb_id = tv_episodes.showid AND airdate < ? AND airdate >= ? AND tv_episodes.status = ? AND tv_episodes.status NOT IN ("+','.join(['?']*len(qualList))+")", [today, recently, WANTED] + qualList)
-        sql_results += more_sql_results
+        more_sql_results = myDB.select("SELECT *, 0 as localtime, tv_shows.status as show_status FROM tv_episodes, tv_shows WHERE season != 0 AND tv_shows.tvdb_id = tv_episodes.showid AND airdate < ? AND airdate >= ? AND tv_episodes.status = ? AND tv_episodes.status NOT IN ("+','.join(['?']*len(qualList))+")", [today, recently, WANTED] + qualList)
+        sql_results1 += more_sql_results
 
-        #epList = sickbeard.comingList
-
-        # sort by air date
+        # sort by localtime
         sorts = {
-            'date': (lambda x, y: cmp(int(x["airdate"]), int(y["airdate"]))),
-            'show': (lambda a, b: cmp(a["show_name"], b["show_name"])),
-            'network': (lambda a, b: cmp(a["network"], b["network"])),
+            'date': (lambda x, y: cmp(x["localtime"], y["localtime"])),
+            'show': (lambda a, b: cmp((a["show_name"], a["localtime"]), (b["show_name"], b["localtime"]))),
+            'network': (lambda a, b: cmp((a["network"], a["localtime"]), (b["network"], b["localtime"]))),
         }
 
-        #epList.sort(sorts[sort])
+        # make a dict out of the sql results
+        sql_results = [dict(row) for row in sql_results1]
+        
+        # regex to parse time (12/24 hour format)
+        time_regex = re.compile(r"(\d{1,2}):(\d{2,2})( [PA]M)?\b", flags=re.IGNORECASE)
+        
+        # add localtime to the dict
+        for index, item in enumerate(sql_results1):
+            mo = time_regex.search(item['airs'])
+            if mo != None and len(mo.groups()) >= 2:
+                try:
+                    hr = helpers.tryInt(mo.group(1))
+                    m = helpers.tryInt(mo.group(2))
+                    ap = mo.group(3)
+                    # convert am/pm to 24 hour clock
+                    if ap != None:
+                        if ap.lower() == u" pm" and hr != 12:
+                            hr += 12
+                        elif ap.lower() == u" am" and hr == 12:
+                            hr -= 12
+                except:
+                    hr = 0
+                    m = 0
+            else:
+                hr = 0
+                m = 0
+            if hr < 0 or hr > 23 or m < 0 or m > 59:
+                hr = 0
+                m = 0
+                
+            te = datetime.datetime.fromordinal(helpers.tryInt(item['airdate']))
+            foreign_timezone = network_timezones.get_network_timezone(item['network'], network_dict, sb_timezone)
+            foreign_naive = datetime.datetime(te.year, te.month, te.day, hr, m,tzinfo=foreign_timezone)
+            sql_results[index]['localtime'] = foreign_naive.astimezone(sb_timezone)
+            
+            #Normalize/Format the Airing Time
+            try:
+                locale.setlocale(locale.LC_TIME, 'us_US')
+                sql_results[index]['localtime_string'] = sql_results[index]['localtime'].strftime("%A %H:%M %p")
+                locale.setlocale(locale.LC_ALL, '') #Reseting to default locale
+            except:
+                sql_results[index]['localtime_string'] = sql_results[index]['localtime'].strftime("%A %H:%M %p")    
+            
         sql_results.sort(sorts[sickbeard.COMING_EPS_SORT])
 
         t = PageTemplate(file="comingEpisodes.tmpl")
-        paused_item = { 'title': '', 'path': 'toggleComingEpsDisplayPaused' }
-        paused_item['title'] = 'Hide Paused' if sickbeard.COMING_EPS_DISPLAY_PAUSED else 'Show Paused'
+#        paused_item = { 'title': '', 'path': 'toggleComingEpsDisplayPaused' }
+#        paused_item['title'] = 'Hide Paused' if sickbeard.COMING_EPS_DISPLAY_PAUSED else 'Show Paused'
+        paused_item = { 'title': 'View Paused:', 'path': {'': ''} }
+        paused_item['path'] = {'Hide': 'toggleComingEpsDisplayPaused'} if sickbeard.COMING_EPS_DISPLAY_PAUSED else {'Show': 'toggleComingEpsDisplayPaused'}
         t.submenu = [
             { 'title': 'Sort by:', 'path': {'Date': 'setComingEpsSort/?sort=date',
                                             'Show': 'setComingEpsSort/?sort=show',
@@ -2877,8 +3673,8 @@ class WebInterface:
             paused_item,
         ]
 
-        t.next_week = next_week
-        t.today = today
+        t.next_week = datetime.datetime.combine(next_week1, datetime.time(tzinfo=sb_timezone))
+        t.today = datetime.datetime.now().replace(tzinfo=sb_timezone)
         t.sql_results = sql_results
 
         # Allow local overriding of layout parameter
@@ -2886,9 +3682,87 @@ class WebInterface:
             t.layout = layout
         else:
             t.layout = sickbeard.COMING_EPS_LAYOUT
-
+                
 
         return _munge(t)
+        
+    # Raw iCalendar implementation by Pedro Jose Pereira Vieito (@pvieito).
+    #
+    # iCalendar (iCal) - Standard RFC 5545 <http://tools.ietf.org/html/rfc5546> 
+    # Works with iCloud, Google Calendar and Outlook.
+    @cherrypy.expose
+    def calendar(self):
+        """ Provides a subscribeable URL for iCal subscriptions
+        """
+
+        logger.log(u"Receiving iCal request from %s" % cherrypy.request.remote.ip)
+
+        poster_url = cherrypy.url().replace('ical', '')
+
+        time_re = re.compile('([0-9]{1,2})\:([0-9]{2})(\ |)([AM|am|PM|pm]{2})')
+
+		# Create a iCal string        
+        ical = 'BEGIN:VCALENDAR\n' 
+        ical += 'VERSION:2.0\n'
+        ical += 'PRODID://Sick-Beard Upcoming Episodes//\n'
+
+        # Get shows info
+        myDB = db.DBConnection()
+        
+        # Limit dates
+        past_date = (datetime.date.today() + datetime.timedelta(weeks=-52)).toordinal()
+        future_date = (datetime.date.today() + datetime.timedelta(weeks=52)).toordinal()
+        
+        # Get all the shows that are not paused and are currently on air (from kjoconnor Fork)
+        calendar_shows = myDB.select("SELECT show_name, tvdb_id, network, airs, runtime FROM tv_shows WHERE status = 'Continuing' AND paused != '1'")
+        for show in calendar_shows:
+            # Get all episodes of this show airing between today and next month
+            episode_list = myDB.select("SELECT tvdbid, name, season, episode, description, airdate FROM tv_episodes WHERE airdate >= ? AND airdate < ? AND showid = ?", (past_date, future_date, int(show["tvdb_id"])))
+
+            for episode in episode_list:
+                
+				# Get local timezone and load network timezones
+				local_zone = tz.tzlocal() 
+				try:
+					network_zone = network_timezones.get_network_timezone(show['network'], network_timezones.load_network_dict(), local_zone)
+				except:
+					# Dummy network_zone for exceptions
+					network_zone = None
+				
+				# Get the air date and time
+				air_date = datetime.datetime.fromordinal(int(episode['airdate']))
+				air_time = re.compile('([0-9]{1,2})\:([0-9]{2})(\ |)([AM|am|PM|pm]{2})').search(show["airs"])
+				
+				# Parse out the air time
+				try:
+					if (air_time.group(4).lower() == 'pm' and int(air_time.group(1)) == 12):
+						t = datetime.time(12, int(air_time.group(2)), 0, tzinfo=network_zone)
+					elif (air_time.group(4).lower() == 'pm'):
+						t = datetime.time((int(air_time.group(1)) + 12), int(air_time.group(2)), 0, tzinfo=network_zone)
+					elif (air_time.group(4).lower() == 'am' and int(air_time.group(1)) == 12):
+						t = datetime.time(0, int(air_time.group(2)), 0, tzinfo=network_zone)
+					else:
+						t = datetime.time(int(air_time.group(1)), int(air_time.group(2)), 0, tzinfo=network_zone)
+				except:
+					# Dummy time for exceptions
+					t = datetime.time(22, 0, 0, tzinfo=network_zone)
+				
+				# Combine air time and air date into one datetime object
+				air_date_time = datetime.datetime.combine(air_date, t).astimezone(local_zone)
+				
+				# Create event for episode
+				ical = ical + 'BEGIN:VEVENT\n'
+				ical = ical + 'DTSTART:' + str(air_date_time.date()).replace("-", "") + '\n'
+				ical = ical + 'SUMMARY:' + show['show_name'] + ': ' + episode['name'] + '\n'
+				ical = ical + 'UID:' + str(datetime.date.today().isoformat()) + '-' + str(random.randint(10000,99999)) + '@Sick-Beard\n'
+				ical = ical + 'DESCRIPTION:' + episode['description'] + '\n'
+				ical = ical + 'LOCATION:' + 'Episode ' + str(episode['episode']) + ' - Season ' + str(episode['season']) + '\n'
+				ical = ical + 'END:VEVENT\n'
+
+        # Ending the iCal
+        ical += 'END:VCALENDAR\n' 
+        
+        return ical
 
     manage = Manage()
 
@@ -2897,11 +3771,11 @@ class WebInterface:
     config = Config()
 
     home = Home()
-
+    
     api = Api()
 
     browser = browser.WebFileBrowser()
 
     errorlogs = ErrorLogs()
-
+    
     ui = UI()

@@ -110,6 +110,50 @@ class DBConnection:
 
             return sqlResult
 
+    def mass_action(self, querylist, logTransaction=False):
+    
+        with db_lock:
+    
+            if querylist == None:
+                return
+    
+            sqlResult = []
+            attempt = 0
+    
+            while attempt < 5:
+                try:
+                    for qu in querylist:
+                        if len(qu) == 1:
+                            if logTransaction:
+                                logger.log(qu[0], logger.DEBUG)
+                            sqlResult.append(self.connection.execute(qu[0]))
+                        elif len(qu) > 1:
+                            if logTransaction:
+                                logger.log(qu[0]+" with args "+str(qu[1]), logger.DEBUG)
+                            sqlResult.append(self.connection.execute(qu[0], qu[1]))
+                    self.connection.commit()
+                    logger.log(u"Transaction with "+str(len(querylist)) + u" query's executed", logger.DEBUG)
+                    return sqlResult
+                except sqlite3.OperationalError, e:
+                    sqlResult = []
+                    if self.connection:
+                        self.connection.rollback()
+                    if "unable to open database file" in e.message or "database is locked" in e.message:
+                        logger.log(u"DB error: "+ex(e), logger.WARNING)
+                        attempt += 1
+                        time.sleep(1)
+                    else:
+                        logger.log(u"DB error: "+ex(e), logger.ERROR)
+                        raise
+                except sqlite3.DatabaseError, e:
+                    sqlResult = []
+                    if self.connection:
+                        self.connection.rollback()
+                    logger.log(u"Fatal error executing query: " + ex(e), logger.ERROR)
+                    raise
+    
+            return sqlResult
+        
     def action(self, query, args=None):
 
         with db_lock:
@@ -123,10 +167,10 @@ class DBConnection:
             while attempt < 5:
                 try:
                     if args == None:
-                        logger.log(self.filename+": "+query, logger.DEBUG)
+                        logger.log(self.filename+": "+query, logger.DB)
                         sqlResult = self.connection.execute(query)
                     else:
-                        logger.log(self.filename+": "+query+" with args "+str(args), logger.DEBUG)
+                        logger.log(self.filename+": "+query+" with args "+str(args), logger.DB)
                         sqlResult = self.connection.execute(query, args)
                     self.connection.commit()
                     # get out of the connection attempt loop since we were successful
@@ -239,7 +283,11 @@ class SchemaUpgrade (object):
         self.connection.action("UPDATE %s SET %s = ?" % (table, column), (default,))
 
     def checkDBVersion(self):
-        return self.connection.checkDBVersion()
+        result = self.connection.select("SELECT db_version FROM db_version")
+        if result:
+            return int(result[0]["db_version"])
+        else:
+            return 0
 
     def incDBVersion(self):
         curVersion = self.checkDBVersion()

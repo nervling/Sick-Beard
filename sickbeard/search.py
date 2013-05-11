@@ -20,6 +20,7 @@ from __future__ import with_statement
 
 import os
 import traceback
+import datetime
 
 import sickbeard
 
@@ -28,6 +29,7 @@ from common import SNATCHED, Quality, SEASON_RESULT, MULTI_EP_RESULT
 from sickbeard import logger, db, show_name_helpers, exceptions, helpers
 from sickbeard import sab
 from sickbeard import nzbget
+from sickbeard import clients
 from sickbeard import history
 from sickbeard import notifiers
 from sickbeard import nzbSplitter
@@ -37,6 +39,7 @@ from sickbeard import providers
 
 from sickbeard.exceptions import ex
 from sickbeard.providers.generic import GenericProvider
+
 
 def _downloadResult(result):
     """
@@ -101,6 +104,12 @@ def snatchEpisode(result, endStatus=SNATCHED):
     result: SearchResult instance to be snatched.
     endStatus: the episode status that should be used for the episode object once it's snatched.
     """
+    result.priority = 0 # -1 = low, 0 = normal, 1 = high
+    if sickbeard.ALLOW_HIGH_PRIORITY:
+        # if it aired recently make it high priority
+        for curEp in result.episodes:
+            if datetime.date.today() - curEp.airdate <= datetime.timedelta(days=7):
+                result.priority = 1
 
     # NZBs can be sent straight to SAB or saved to disk
     if result.resultType in ("nzb", "nzbdata"):
@@ -114,9 +123,16 @@ def snatchEpisode(result, endStatus=SNATCHED):
             logger.log(u"Unknown NZB action specified in config: " + sickbeard.NZB_METHOD, logger.ERROR)
             dlResult = False
 
-    # torrents are always saved to disk
+    # TORRENTs can be sent to clients or saved to disk
     elif result.resultType == "torrent":
-        dlResult = _downloadResult(result)
+        # torrents are saved to disk when blackhole mode
+        if sickbeard.TORRENT_METHOD == "blackhole": 
+            dlResult = _downloadResult(result)
+        else:
+
+            result.content = result.provider.getURL(result.url) if not result.url.startswith('magnet') else None 
+            client = clients.getClientIstance(sickbeard.TORRENT_METHOD)()
+            dlResult = client.sendTORRENT(result)
     else:
         logger.log(u"Unknown result type, unable to download it", logger.ERROR)
         dlResult = False
@@ -133,7 +149,7 @@ def snatchEpisode(result, endStatus=SNATCHED):
             curEpObj.saveToDB()
 
         if curEpObj.status not in Quality.DOWNLOADED:
-            notifiers.notify_snatch(curEpObj.prettyName())
+            notifiers.notify_snatch(curEpObj._format_pattern('%SN - %Sx%0E - %EN - %QN'))
 
     return True
 
@@ -367,9 +383,9 @@ def findSeason(show, season):
     if bestSeasonNZB:
 
         # get the quality of the season nzb
-        seasonQual = Quality.nameQuality(bestSeasonNZB.name)
+        seasonQual = Quality.sceneQuality(bestSeasonNZB.name)
         seasonQual = bestSeasonNZB.quality
-        logger.log(u"The quality of the season NZB is "+Quality.qualityStrings[seasonQual], logger.DEBUG)
+        logger.log(u"The quality of the season "+bestSeasonNZB.provider.providerType+" is "+Quality.qualityStrings[seasonQual], logger.DEBUG)
 
         myDB = db.DBConnection()
         allEps = [int(x["episode"]) for x in myDB.select("SELECT episode FROM tv_episodes WHERE showid = ? AND season = ?", [show.tvdbid, season])]
@@ -385,7 +401,8 @@ def findSeason(show, season):
 
         # if we need every ep in the season and there's nothing better then just download this and be done with it
         if allWanted and bestSeasonNZB.quality == highest_quality_overall:
-            logger.log(u"Every ep in this season is needed, downloading the whole NZB "+bestSeasonNZB.name)
+            logger.log(u"Every ep in this season is needed, downloading the whole "+bestSeasonNZB.provider.providerType+" "+bestSeasonNZB.name)
+
             epObjs = []
             for curEpNum in allEps:
                 epObjs.append(show.getEpisode(season, curEpNum))
@@ -419,7 +436,7 @@ def findSeason(show, season):
             # If this is a torrent all we can do is leech the entire torrent, user will have to select which eps not do download in his torrent client
             else:
                 
-                # Season result from BTN must be a full-season torrent, creating multi-ep result for it.
+                # Season result from Torrent Provider must be a full-season torrent, creating multi-ep result for it.
                 logger.log(u"Adding multi-ep result for full-season torrent. Set the episodes you don't want to 'don't download' in your torrent client if desired!")
                 epObjs = []
                 for curEpNum in allEps:

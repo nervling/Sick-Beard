@@ -91,11 +91,10 @@ class GenericProvider:
             result = classes.TorrentSearchResult(episodes)
         else:
             result = classes.SearchResult(episodes)
-
-        result.provider = self
-
+        
+        result.provider = self    
+            
         return result
-
 
     def getURL(self, url, headers=None):
         """
@@ -186,7 +185,7 @@ class GenericProvider:
         Returns a Quality value obtained from the node's data 
         """
         (title, url) = self._get_title_and_url(item) #@UnusedVariable
-        quality = Quality.nameQuality(title)
+        quality = Quality.sceneQuality(title)
         return quality
 
     def _doSearch(self):
@@ -216,7 +215,7 @@ class GenericProvider:
         
         return (title, url)
     
-    def findEpisode (self, episode, manualSearch=False):
+    def findEpisode(self, episode, manualSearch=False):
 
         self._checkAuth()
 
@@ -235,7 +234,7 @@ class GenericProvider:
         itemList = []
 
         for cur_search_string in self._get_episode_search_strings(episode):
-            itemList += self._doSearch(cur_search_string, show=episode.show)
+            itemList += self._doSearch(cur_search_string)
 
         for item in itemList:
 
@@ -269,12 +268,12 @@ class GenericProvider:
             result.url = url
             result.name = title
             result.quality = quality
-
+            result.provider = self
+            result.content = None 
+            
             results.append(result)
 
         return results
-
-
 
     def findSeasonResults(self, show, season):
 
@@ -301,7 +300,7 @@ class GenericProvider:
             if not show.air_by_date:
                 # this check is meaningless for non-season searches
                 if (parse_result.season_number != None and parse_result.season_number != season) or (parse_result.season_number == None and season != 1):
-                    logger.log(u"The result "+title+" doesn't seem to be a valid episode for season "+str(season)+", ignoring")
+                    logger.log(u"The result "+title+" doesn't seem to be a valid episode for season "+str(season)+", ignoring", logger.DEBUG)
                     continue
 
                 # we just use the existing info for normal searches
@@ -345,6 +344,8 @@ class GenericProvider:
             result.url = url
             result.name = title
             result.quality = quality
+            result.provider = self
+            result.content = None 
 
             if len(epObj) == 1:
                 epNum = epObj[0].episode
@@ -360,7 +361,6 @@ class GenericProvider:
                 results[epNum].append(result)
             else:
                 results[epNum] = [result]
-
 
         return results
 

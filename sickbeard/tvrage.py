@@ -16,8 +16,6 @@
 # You should have received a copy of the GNU General Public License
 # along with Sick Beard.  If not, see <http://www.gnu.org/licenses/>.
 
-
-
 import urllib, urllib2
 import datetime
 import traceback
@@ -259,9 +257,10 @@ class TVRage:
         info = {}
 
         for x in urlData:
-            key, value = x.split("@")
-            key = key.replace('<pre>','')
-            info[key] = value.strip()
+            if "@" in x:
+                key, value = x.split("@")
+                key = key.replace('<pre>','')
+                info[key] = value.strip()
 
         # save it for later in case somebody is curious
         if info.has_key('Show ID'):
@@ -339,3 +338,4 @@ class TVRage:
             logger.log(u"Unable to create episode from tvrage (could be for a variety of reasons): " + ex(e))
 
         return ep
+

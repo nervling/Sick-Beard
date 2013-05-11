@@ -271,10 +271,12 @@ class Episode(dict):
         #end for cur_key, cur_value
 
 
+
 class Actors(list):
     """Holds all Actor instances for a show
     """
     pass
+
 
 
 class Actor(dict):

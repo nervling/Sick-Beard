@@ -384,5 +384,4 @@ class ConfigMigrator():
             finalName = re.sub("\s+", ".", finalName)
 
         return finalName
-
-
+    
