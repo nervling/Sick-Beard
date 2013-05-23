@@ -31,6 +31,7 @@ from sickbeard.tv import TVShow
 from sickbeard import exceptions, logger, ui, db
 from sickbeard import generic_queue
 from sickbeard import name_cache
+from sickbeard import scene_exceptions
 from sickbeard.exceptions import ex
 
 class ShowQueue(generic_queue.GenericQueue):
@@ -130,8 +131,8 @@ class ShowQueue(generic_queue.GenericQueue):
 
         return queueItemObj
 
-    def addShow(self, tvdb_id, showDir, default_status=None, quality=None, flatten_folders=None, subtitles=None, lang="en"):
-        queueItemObj = QueueItemAdd(tvdb_id, showDir, default_status, quality, flatten_folders, lang, subtitles)
+    def addShow(self, tvdb_id, showDir, default_status=None, quality=None, flatten_folders=None, subtitles=None, lang="en", anime=0):
+        queueItemObj = QueueItemAdd(tvdb_id, showDir, default_status, quality, flatten_folders, lang, subtitles, anime)
         
         self.add_item(queueItemObj)
 
@@ -183,7 +184,7 @@ class ShowQueueItem(generic_queue.QueueItem):
 
 
 class QueueItemAdd(ShowQueueItem):
-    def __init__(self, tvdb_id, showDir, default_status, quality, flatten_folders, lang, subtitles):
+    def __init__(self, tvdb_id, showDir, default_status, quality, flatten_folders, lang, subtitles, anime):
 
         self.tvdb_id = tvdb_id
         self.showDir = showDir
@@ -192,6 +193,7 @@ class QueueItemAdd(ShowQueueItem):
         self.flatten_folders = flatten_folders
         self.lang = lang
         self.subtitles = subtitles
+        self.anime = anime
 
         self.show = None
 
@@ -269,6 +271,7 @@ class QueueItemAdd(ShowQueueItem):
             self.show.subtitles = self.subtitles if self.subtitles != None else sickbeard.SUBTITLES_DEFAULT
             self.show.quality = self.quality if self.quality else sickbeard.QUALITY_DEFAULT
             self.show.flatten_folders = self.flatten_folders if self.flatten_folders != None else sickbeard.FLATTEN_FOLDERS_DEFAULT
+            self.show.anime = self.anime if self.anime != None else sickbeard.ANIME_DEFAULT
             self.show.paused = False
             
             # be smartish about this
@@ -310,13 +313,7 @@ class QueueItemAdd(ShowQueueItem):
 
         # add it to the show list
         sickbeard.showList.append(self.show)
-
-        try:
-            self.show.loadEpisodesFromDir()
-        except Exception, e:
-            logger.log(u"Error searching dir for episodes: " + ex(e), logger.ERROR)
-            logger.log(traceback.format_exc(), logger.DEBUG)
-
+        
         try:
             self.show.loadEpisodesFromTVDB()
             self.show.setTVRID()
@@ -326,6 +323,21 @@ class QueueItemAdd(ShowQueueItem):
             
         except Exception, e:
             logger.log(u"Error with TVDB, not creating episode list: " + ex(e), logger.ERROR)
+            logger.log(traceback.format_exc(), logger.DEBUG)
+
+        # before we parse local files lets update exceptions
+        scene_exceptions.retrieve_exceptions()
+        # and get scene numbers
+        logger.log(u"Attempting to load scene numbers", logger.DEBUG)
+        if self.show.loadEpisodeSceneNumbers():
+            logger.log(u"loading scene numbers successfull", logger.DEBUG)
+        else:
+            logger.log(u"loading scene numbers NOT successfull or no scene numbers available", logger.DEBUG)
+
+        try:
+            self.show.loadEpisodesFromDir()
+        except Exception, e:
+            logger.log(u"Error searching dir for episodes: " + ex(e), logger.ERROR)
             logger.log(traceback.format_exc(), logger.DEBUG)
 
         try:
@@ -502,6 +514,14 @@ class QueueItemUpdate(ShowQueueItem):
                         curEp.deleteEpisode()
                     except exceptions.EpisodeDeletedException:
                         pass
+
+        logger.log(u"Attempting to load scene numbers", logger.DEBUG)
+        if self.show.loadEpisodeSceneNumbers():
+            logger.log(u"loading scene numbers successfull", logger.DEBUG)
+        else:
+            logger.log(u"loading scene numbers NOT successfull or no scene numbers available", logger.DEBUG)
+            
+
 
         # now that we've updated the DB from TVDB see if there's anything we can add from TVRage
         with self.show.lock:

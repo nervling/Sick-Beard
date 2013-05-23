@@ -83,6 +83,7 @@
       <th class="nowrap" style="text-align: left;">Show Name</th>
       <th>Quality</th>
       <th>Flat Folders</th>
+      <th>Anime</th>
       <th>Paused</th>
       <th>Status</th>
       <th width="1%">Update<br/><input type="checkbox" class="bulkCheck" id="updateCheck" /></th>
@@ -143,6 +144,7 @@ $myShowList.sort(lambda x, y: cmp(x.name, y.name))
     <td align="center"><span class="quality Custom">Custom</span></td>
 #end if 
     <td align="center"><img src="$sbRoot/images/#if int($curShow.flatten_folders) == 1 then "yes16.png\" alt=\"Y\"" else "no16.png\" alt=\"N\""# width="16" height="16" /></td>
+    <td align="center"><img src="$sbRoot/images/#if int($curShow.is_anime) == 1 then "yes16.png\" alt=\"Y\"" else "no16.png\" alt=\"N\""# width="16" height="16" /></td>
     <td align="center"><img src="$sbRoot/images/#if int($curShow.paused) == 1 then "yes16.png\" alt=\"Y\"" else "no16.png\" alt=\"N\""# width="16" height="16" /></td>
     <td align="center">$curShow.status</td>
     <td align="center">$curUpdate</td>

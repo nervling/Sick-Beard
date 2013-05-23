@@ -99,6 +99,24 @@
 	            5: { sorter: 'eps' },
 	        }
     });
+    
+    if(\$("#showListTableAnime").length > 0){
+        \$("#showListTableAnime").tablesorter({
+            sortList: [[5,1],[1,0]],
+            textExtraction: {
+                3: function(node) { return \$(node).find("span").text().toLowerCase(); },
+                4: function(node) { return \$(node).find("span").text(); },
+                5: function(node) { return \$(node).find("img").attr("alt"); }
+            },
+            widgets: ['saveSort', 'zebra', 'stickyHeaders'],
+            headers: {
+                0: { sorter: 'isoDate' },
+                1: { sorter: 'loadingNames' },
+                3: { sorter: 'quality' },
+                4: { sorter: 'eps' }
+            }
+        });
+    };
 
 });
 
@@ -111,6 +129,14 @@
 	<h1 class="title">$title</h1>
 #end if
 
+#for $curShowlist in $showlists:
+#set $curListType = $curShowlist[0]
+#set $myShowList = $list($curShowlist[1])
+#if $curListType == "Anime":
+<h1 class="header">Anime List</h1>
+#end if
+
+
 <div id="HomeLayout" style="float: right; margin-top: -25px;">
 	<span><b>Layout:</b>
 		<a class="inner" href="$sbRoot/setHomeLayout/?layout=poster" style="font-size: 12px;">Poster</a> &middot;
@@ -119,7 +145,7 @@
 	</span>
 </div>
 
-<table id="showListTable" class="sickbeardTable tablesorter" cellspacing="1" border="0" cellpadding="0">
+<table id="showListTable$curListType" class="sickbeardTable tablesorter" cellspacing="1" border="0" cellpadding="0">
 
   <thead><tr><th class="nowrap">Next Ep</th>#if $layout=="poster" then "<th>Poster</th>" else "<th style='display: none;'></th>"#<th>Show</th><th>Network</th><th>Quality</th><th>Downloads</th><th>Active</th><th>Status</th></tr></thead>
   <tfoot>
@@ -154,7 +180,7 @@
   </tr>
 #end for
 
-#set $myShowList = $list($sickbeard.showList)
+
 $myShowList.sort(lambda x, y: cmp(x.name, y.name))
 #for $curShow in $myShowList:
 #set $curEp = $curShow.nextEpisode()
@@ -242,6 +268,6 @@ $myShowList.sort(lambda x, y: cmp(x.name, y.name))
 #end for
 </tbody>
 </table>
-
+#end for
 <script type="text/javascript" src="$sbRoot/js/tableClick.js?$sbPID"></script>
 #include $os.path.join($sickbeard.PROG_DIR,"gui/slick/interfaces/default/inc_bottom.tmpl")

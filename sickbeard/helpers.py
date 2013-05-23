@@ -22,6 +22,7 @@ import stat
 import urllib, urllib2
 import re, socket
 import shutil
+import locale
 import traceback
 import time, sys
 import hashlib
@@ -32,8 +33,8 @@ from xml.dom.minidom import Node
 
 import sickbeard
 
-from sickbeard.exceptions import MultipleShowObjectsException, ex
-from sickbeard import logger, classes
+from sickbeard.exceptions import MultipleShowObjectsException, ex, EpisodeNotFoundByAbsoluteNumerException
+from sickbeard import logger, classes, exceptions
 from sickbeard.common import USER_AGENT, mediaExtensions, subtitleExtensions, XML_NSMAP
 
 from sickbeard import db
@@ -43,6 +44,8 @@ from sickbeard import notifiers
 from lib.tvdb_api import tvdb_api, tvdb_exceptions
 
 import xml.etree.cElementTree as etree
+from sickbeard.name_parser.parser import NameParser, InvalidNameException
+import lib.adba as adba
 
 from lib import subliminal
 #from sickbeard.subtitles import EXTENSIONS
@@ -392,42 +395,6 @@ def buildNFOXML(myShow):
 
     return tvNode
 
-
-def searchDBForShow(regShowName):
-
-    showNames = [re.sub('[. -]', ' ', regShowName)]
-
-    myDB = db.DBConnection()
-
-    yearRegex = "([^()]+?)\s*(\()?(\d{4})(?(2)\))$"
-
-    for showName in showNames:
-
-        sqlResults = myDB.select("SELECT * FROM tv_shows WHERE show_name LIKE ? OR tvr_name LIKE ?", [showName, showName])
-
-        if len(sqlResults) == 1:
-            return (int(sqlResults[0]["tvdb_id"]), sqlResults[0]["show_name"])
-
-        else:
-
-            # if we didn't get exactly one result then try again with the year stripped off if possible
-            match = re.match(yearRegex, showName)
-            if match and match.group(1):
-                logger.log(u"Unable to match original name but trying to manually strip and specify show year", logger.DEBUG)
-                sqlResults = myDB.select("SELECT * FROM tv_shows WHERE (show_name LIKE ? OR tvr_name LIKE ?) AND startyear = ?", [match.group(1)+'%', match.group(1)+'%', match.group(3)])
-
-            if len(sqlResults) == 0:
-                logger.log(u"Unable to match a record in the DB for "+showName, logger.DEBUG)
-                continue
-            elif len(sqlResults) > 1:
-                logger.log(u"Multiple results for "+showName+" in the DB, unable to match show name", logger.DEBUG)
-                continue
-            else:
-                return (int(sqlResults[0]["tvdb_id"]), sqlResults[0]["show_name"])
-
-
-    return None
-
 def sizeof_fmt(num):
     '''
     >>> sizeof_fmt(2)
@@ -671,6 +638,86 @@ def fixSetGroupID(childPath):
             logger.log(u"Respecting the set-group-ID bit on the parent directory for %s" % (childPath), logger.DEBUG)
         except OSError:
             logger.log(u"Failed to respect the set-group-ID bit on the parent directory for %s (setting group ID %i)" % (childPath, parentGID), logger.ERROR)
+
+def is_anime_in_show_list():
+    for show in sickbeard.showList:
+        if show.is_anime:
+            return True
+    return False
+
+def update_anime_support():
+    sickbeard.ANIMESUPPORT = is_anime_in_show_list()
+
+def get_all_episodes_from_absolute_number(show, tvdb_id, absolute_numbers):
+    if len(absolute_numbers) == 0:
+        raise EpisodeNotFoundByAbsoluteNumerException()
+
+    episodes = []
+    season = None
+    
+    if not show and not tvdb_id:
+        return (season, episodes)
+    
+    if not show and tvdb_id:
+        show = findCertainShow(sickbeard.showList, tvdb_id)
+
+    for absolute_number in absolute_numbers:
+        ep = show.getEpisode(None, None,absolute_number=absolute_number)
+        if ep:
+            episodes.append(ep.episode)
+        else:
+            raise EpisodeNotFoundByAbsoluteNumerException()
+        season = ep.season # this will always take the last found seson so eps that cross the season border are not handeled well
+    
+    return (season, episodes)
+
+def _check_against_names(nameInQuestion, show, season=-1):
+
+    showNames = []
+    if season in [-1, 1]:
+        #print "adding normal show name"
+        showNames = [show.name]
+    
+    showNames.extend(sickbeard.scene_exceptions.get_scene_exceptions(show.tvdbid, season=season))
+
+    for showName in showNames:
+        nameFromList = full_sanitizeSceneName(showName)
+        #logger.log(u"Comparing names: '"+nameFromList+"' vs '"+nameInQuestion+"'", logger.DEBUG)
+
+        if nameFromList == nameInQuestion:
+            return True
+
+    return False
+
+
+def set_up_anidb_connection():
+        if not sickbeard.USE_ANIDB:
+            logger.log(u"Usage of anidb disabled. Skiping", logger.DEBUG)
+            return False
+        
+        if not sickbeard.ANIDB_USERNAME and not sickbeard.ANIDB_PASSWORD:
+            logger.log(u"anidb username and/or password are not set. Aborting anidb lookup.", logger.DEBUG)
+            return False
+        
+        if not sickbeard.ADBA_CONNECTION:
+            anidb_logger = lambda x : logger.log("ANIDB: "+str(x), logger.DEBUG)
+            sickbeard.ADBA_CONNECTION = adba.Connection(keepAlive=True,log=anidb_logger)
+        
+        if not sickbeard.ADBA_CONNECTION.authed():
+            try:
+                sickbeard.ADBA_CONNECTION.auth(sickbeard.ANIDB_USERNAME, sickbeard.ANIDB_PASSWORD)
+            except Exception,e :
+                logger.log(u"exception msg: "+str(e))
+                return False
+        else:
+            return True
+ 
+        return sickbeard.ADBA_CONNECTION.authed()
+
+   
+def full_sanitizeSceneName(name):
+    return re.sub('[. -;]', ' ', sanitizeSceneName(name)).lower().lstrip()
+
 
 def sanitizeSceneName (name, ezrss=False):
     """

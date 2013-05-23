@@ -24,6 +24,13 @@ import threading
 import re
 import glob
 import traceback
+from sickbeard.completparser import CompleteParser
+from sickbeard.common import statusStrings
+try:
+    import json
+except ImportError:
+    from lib import simplejson as json
+import urllib2, httplib
 
 import sickbeard
 
@@ -79,6 +86,7 @@ class TVShow(object):
         self.air_by_date = 0
         self.subtitles = int(sickbeard.SUBTITLES_DEFAULT if sickbeard.SUBTITLES_DEFAULT else 0)
         self.lang = lang
+        self.anime = 0
 
         self.lock = threading.Lock()
         self._isDirGood = False
@@ -90,9 +98,18 @@ class TVShow(object):
             raise exceptions.MultipleShowObjectsException("Can't create a show if it already exists")
 
         self.loadFromDB()
-
+        
         self.saveToDB()
-
+        
+        self.seasonNumberCache = []
+    
+    def _is_anime(self):
+        if(self.anime > 0):
+            return True
+        else:
+            return False
+    is_anime = property(_is_anime)
+    
     def _getLocation(self):
         # no dir check needed if missing show dirs are created during post-processing
         if sickbeard.CREATE_MISSING_SHOW_DIRS:
@@ -166,29 +183,59 @@ class TVShow(object):
         return ep_list
 
 
-    def getEpisode(self, season, episode, file=None, noCreate=False):
+    def getEpisode(self, season, episode, file=None, noCreate=False, absolute_number=None, scene=False):
+        """Return TVEpisode(self, season, episode) | None
+        """
+        # if we get an anime get the real season and episode
+        if self.anime and absolute_number != None and season == None and episode == None:
+            myDB = db.DBConnection()
+            sql = "SELECT * FROM tv_episodes WHERE showid = ? and absolute_number = ? and season != 0"
+            sqlResults = myDB.select(sql, [self.tvdbid, absolute_number])
+                
+            if len(sqlResults) == 1:
+                episode = int(sqlResults[0]["episode"])
+                season = int(sqlResults[0]["season"])
+                logger.log("Found episode by absolute_number:"+str(absolute_number)+" which is "+str(season)+"x"+str(episode), logger.DEBUG)
+            elif len(sqlResults) > 1:
+                logger.log("Multiple entries for absolute number: "+str(absolute_number)+" in show: "+self.name+" found ", logger.ERROR)
+                return None
+            else:
+                logger.log("No entries for absolute number: "+str(absolute_number)+" in show: "+self.name+" found.", logger.DEBUG)
+                return None
+            
+            """
+            i am taking this out because it is not the right way to go and is prducing errors
+            else:
+                logger.log("No entries for absolute number: "+str(absolute_number)+" in show: "+self.name+" found. will try with absolute number as episode number from first season", logger.DEBUG)
+                # this fix the first season for shows that dont have absolute numbering from the tvdb
+                season = 1
+                episode = absolute_number
+            """
+        def createCurSeasonDict():
+            if not season in self.episodes:
+                self.episodes[season] = {}
 
-        #return TVEpisode(self, season, episode)
-
-        if not season in self.episodes:
-            self.episodes[season] = {}
-
+        createCurSeasonDict()
         ep = None
-
-        if not episode in self.episodes[season] or self.episodes[season][episode] == None:
+        
+        if (not episode in self.episodes[season] or self.episodes[season][episode] == None) or scene:
             if noCreate:
                 return None
 
             logger.log(str(self.tvdbid) + ": An object for episode " + str(season) + "x" + str(episode) + " didn't exist in the cache, trying to create it", logger.DEBUG)
 
             if file != None:
-                ep = TVEpisode(self, season, episode, file)
+                ep = TVEpisode(self, season, episode, file, scene)
             else:
-                ep = TVEpisode(self, season, episode)
+                ep = TVEpisode(self, season, episode, scene=scene)
 
             if ep != None:
+                if scene: # if scene mode was active we need to use the new ep season episode numbers
+                    season = ep.season
+                    episode = ep.episode
+                    createCurSeasonDict() # recheck current "real" season dict
                 self.episodes[season][episode] = ep
-
+        
         return self.episodes[season][episode]
 
     def writeShowNFO(self):
@@ -240,9 +287,9 @@ class TVShow(object):
         if not ek.ek(os.path.isdir, self._location):
             logger.log(str(self.tvdbid) + ": Show dir doesn't exist, not loading episodes from disk")
             return
-
+        logger.log(str(self.tvdbid) + ": ############################################ ")
         logger.log(str(self.tvdbid) + ": Loading all episodes from the show directory " + self._location)
-
+        logger.log(str(self.tvdbid) + ": ############################################ ")
         # get file list
         mediaFiles = helpers.listMediaFiles(self._location)
 
@@ -269,7 +316,7 @@ class TVShow(object):
             
             parse_result = None
             try:
-                np = NameParser(False)
+                np = CompleteParser(False)
                 parse_result = np.parse(ep_file_name)
             except InvalidNameException:
                 pass
@@ -345,7 +392,9 @@ class TVShow(object):
 
 
     def loadEpisodesFromTVDB(self, cache=True):
-
+        
+        self._clearSeasonNumbersCache()
+        
         # There's gotta be a better way of doing this but we don't wanna
         # change the cache value elsewhere
         ltvdb_api_parms = sickbeard.TVDB_API_PARMS.copy()
@@ -395,6 +444,53 @@ class TVShow(object):
                 scannedEps[season][episode] = True
 
         return scannedEps
+
+    def loadEpisodeSceneNumbers(self):
+        url = "http://thexem.de/map/all?id=%s&origin=tvdb&destination=scene" % self.tvdbid
+        logger.log("xem url: " + url, logger.DEBUG)
+        opener = urllib2.build_opener()
+        try:
+            f = opener.open(url)
+        except (EOFError, IOError), e:
+            logger.log(u"Unable to connect to XEM. Is thexem.de down ?" + ex(e), logger.ERROR)
+            return False
+        except httplib.InvalidURL, e:
+            logger.log(u"Invalid XEM host. Is thexem.de down ?: " + ex(e), logger.ERROR)
+            return False
+        if not f:
+            logger.log(u"Empty response from " + url + ": " + ex(e), logger.ERROR)
+            return False
+        try:
+            xemJson = json.loads(f.read())
+        except ValueError, e:
+            return False
+
+        epList = self.loadEpisodesFromDB()
+        for curSeason in epList:
+            for curEp in epList[curSeason]:
+                epObj = self.getEpisode(curSeason, curEp)
+                epObj.scene_season = None
+                epObj.scene_episode = None
+                epObj.scene_absolute_number = None
+                epObj.saveToDB()
+
+        if xemJson['result'] == 'failure':
+            logger.log(u"XEM said failure. message: " + xemJson['message'], logger.DEBUG)
+            return False
+
+        for epNumbers in xemJson['data']:
+            tvdb = epNumbers['tvdb']
+            scene = epNumbers['scene']
+            if not tvdb['season'] in epList or not tvdb['episode'] in epList[tvdb['season']]:
+                logger.log(str(self.tvdbid) + ": NOT adding scene number. tvdb: " + str(tvdb) + "| scene: " + str(scene) + " we dont have a ep with this (tvdb) sxxexx", logger.WARNING)
+
+            logger.log(str(self.tvdbid) + ": adding scene number. tvdb: " + str(tvdb) + "| scene: " + str(scene), logger.DEBUG)
+            curEp = self.getEpisode(tvdb['season'], tvdb['episode'])
+            curEp.scene_season = scene['season']
+            curEp.scene_episode = scene['episode']
+            curEp.scene_absolute_number = scene['absolute']
+            curEp.saveToDB()
+        return True
 
     def setTVRID(self, force=False):
 
@@ -449,46 +545,20 @@ class TVShow(object):
             logger.log(str(self.tvdbid) + ": That isn't even a real file dude... " + file)
             return None
 
+        logger.log(str(self.tvdbid) + ": -------------------------------------------- ", logger.DEBUG)
         logger.log(str(self.tvdbid) + ": Creating episode object from " + file, logger.DEBUG)
+        logger.log(str(self.tvdbid) + ": -------------------------------------------- ", logger.DEBUG)
 
-        try:
-            myParser = NameParser()
-            parse_result = myParser.parse(file)
-        except InvalidNameException:
-            logger.log(u"Unable to parse the filename "+file+" into a valid episode", logger.ERROR)
-            return None
-
-        if len(parse_result.episode_numbers) == 0 and not parse_result.air_by_date:
-            logger.log("parse_result: "+str(parse_result))
-            logger.log(u"No episode number found in "+file+", ignoring it", logger.ERROR)
+        cp = CompleteParser(show=self, tvdbActiveLookUp=True)
+        cpr = cp.parse(file)
+        if not cpr.sxxexx:
+            logger.log(u"No conclusive information found in " + file + ", ignoring it", logger.ERROR)
             return None
 
         # for now lets assume that any episode in the show dir belongs to that show
-        season = parse_result.season_number if parse_result.season_number != None else 1
-        episodes = parse_result.episode_numbers
+        season = cpr.season
+        episodes = cpr.episodes
         rootEp = None
-
-        # if we have an air-by-date show then get the real season/episode numbers
-        if parse_result.air_by_date:
-            try:
-                # There's gotta be a better way of doing this but we don't wanna
-                # change the cache value elsewhere
-                ltvdb_api_parms = sickbeard.TVDB_API_PARMS.copy()
-
-                if self.lang:
-                    ltvdb_api_parms['language'] = self.lang
-
-                t = tvdb_api.Tvdb(**ltvdb_api_parms)
-
-                epObj = t[self.tvdbid].airedOn(parse_result.air_date)[0]
-                season = int(epObj["seasonnumber"])
-                episodes = [int(epObj["episodenumber"])]
-            except tvdb_exceptions.tvdb_episodenotfound:
-                logger.log(u"Unable to find episode with date " + str(parse_result.air_date) + " for show " + self.name + ", skipping", logger.WARNING)
-                return None
-            except tvdb_exceptions.tvdb_error, e:
-                logger.log(u"Unable to contact TVDB: "+ex(e), logger.WARNING)
-                return None
 
         for curEpNum in episodes:
 
@@ -537,7 +607,7 @@ class TVShow(object):
 
             # if they replace a file on me I'll make some attempt at re-checking the quality unless I know it's the same file
             if checkQualityAgain and not same_file:
-                newQuality = Quality.nameQuality(file)
+                newQuality = Quality.nameQuality(file, self.is_anime)
                 logger.log(u"Since this file has been renamed, I checked "+file+" and found quality "+Quality.qualityStrings[newQuality], logger.DEBUG)
                 if newQuality != Quality.UNKNOWN:
                     curEp.status = Quality.compositeStatus(DOWNLOADED, newQuality)
@@ -547,7 +617,7 @@ class TVShow(object):
             elif not same_file and sickbeard.helpers.isMediaFile(file) and curEp.status not in Quality.DOWNLOADED + [ARCHIVED, IGNORED]:
 
                 oldStatus, oldQuality = Quality.splitCompositeStatus(curEp.status)
-                newQuality = Quality.nameQuality(file)
+                newQuality = Quality.nameQuality(file, self.is_anime)
                 if newQuality == Quality.UNKNOWN:
                     newQuality = Quality.assumeQuality(file)
 
@@ -584,7 +654,7 @@ class TVShow(object):
 
     def loadFromDB(self, skipNFO=False):
 
-        logger.log(str(self.tvdbid) + ": Loading show info from database")
+        logger.log(str(self.tvdbid) + ": Loading show info from database",logger.DEBUG)
 
         myDB = db.DBConnection()
 
@@ -637,6 +707,10 @@ class TVShow(object):
 
             if self.lang == "":
                 self.lang = sqlResults[0]["lang"]
+            
+            self.anime = sqlResults[0]["anime"]
+            if self.anime == None:
+                self.anime = 0
 
             if self.imdbid == "":
                 self.imdbid = sqlResults[0]["imdb_id"]                    
@@ -911,7 +985,6 @@ class TVShow(object):
                     curEp.release_name = ''
                     curEp.saveToDB()
 
-
     def downloadSubtitles(self, force=False):
         #TODO: Add support for force option
         if not ek.ek(os.path.isdir, self._location):
@@ -970,10 +1043,12 @@ class TVShow(object):
                         "startyear": self.startyear,
                         "tvr_name": self.tvrname,
                         "lang": self.lang,
-                        "imdb_id": self.imdbid
+                        "imdb_id": self.imdbid,
+                        "anime": self.anime
                         }
 
         myDB.upsert("tv_shows", newValueDict, controlValueDict)
+        helpers.update_anime_support()
         
         if self.imdbid:
             controlValueDict = {"tvdb_id": self.tvdbid}
@@ -996,8 +1071,8 @@ class TVShow(object):
         toReturn += "genre: " + self.genre + "\n"
         toReturn += "runtime: " + str(self.runtime) + "\n"
         toReturn += "quality: " + str(self.quality) + "\n"
+        toReturn += "anime: " + str(self.is_anime) + "\n"
         return toReturn
-
 
     def wantEpisode(self, season, episode, quality, manualSearch=False):
 
@@ -1020,7 +1095,7 @@ class TVShow(object):
 
         epStatus = int(sqlResults[0]["status"])
 
-        logger.log(u"current episode status: "+str(epStatus), logger.DEBUG)
+        logger.log(u"current episode status: " + statusStrings[epStatus], logger.DEBUG)
 
         # if we know we don't want it then just say no
         if epStatus in (SKIPPED, IGNORED, ARCHIVED) and not manualSearch:
@@ -1047,7 +1122,6 @@ class TVShow(object):
 
         logger.log(u"None of the conditions were met so I'm just saying no", logger.DEBUG)
         return False
-
 
     def getOverview(self, epStatus):
 
@@ -1081,6 +1155,24 @@ class TVShow(object):
             else:
                 return Overview.GOOD
             
+    def getAllSeasonNumbers(self):
+        if not self._seasonNumberCache:
+            myDB = db.DBConnection()
+            sqlResults = myDB.select("SELECT DISTINCT(season) as season FROM tv_episodes WHERE showid = ? AND season > 0", [self.tvdbid])
+            self._seasonNumberCache = [int(x["season"]) for x in sqlResults]
+
+        return self._seasonNumberCache
+
+    def _clearSeasonNumbersCache(self):
+        self._seasonNumberCache = []
+
+    def getPreviuosAiredCount(self, season, episode):
+        myDB = db.DBConnection()
+        epCount = myDB.select("SELECT COUNT(tvdbid) count FROM tv_episodes WHERE showid = ? AND season != 0 AND airdate > 1 AND (( season = ? AND episode < ? ) OR ( season < ? ))", [self.tvdbid, season, episode, season])
+        if len(epCount):
+            return int(epCount[0]['count'])
+        return 0
+            
 def dirty_setter(attr_name):
     def wrapper(self, val):
         if getattr(self, attr_name) != val:
@@ -1089,12 +1181,12 @@ def dirty_setter(attr_name):
     return wrapper
 
 class TVEpisode(object):
-
-    def __init__(self, show, season, episode, file=""):
-
+    
+    def __init__(self, show, season, episode, file="", scene=False):
         self._name = ""
         self._season = season
         self._episode = episode
+        self._absolute_number = 0
         self._description = ""
         self._subtitles = list()
         self._subtitles_searchcount = 0
@@ -1108,6 +1200,14 @@ class TVEpisode(object):
         self._release_name = ''
         self._is_proper = False
 
+        self.scene = scene
+        self._scene_season = None
+        self._scene_episode = None
+        self._scene_absolute_number = None
+        if self.scene:
+            self._scene_season = self._season
+            self._scene_episode = self._episode
+
         # setting any of the above sets the dirty flag
         self.dirty = True
 
@@ -1116,15 +1216,16 @@ class TVEpisode(object):
 
         self.lock = threading.Lock()
 
-        self.specifyEpisode(self.season, self.episode)
-
         self.relatedEps = []
+
+        self.specifyEpisode(self.season, self.episode)
 
         self.checkForMetaFiles()
 
     name = property(lambda self: self._name, dirty_setter("_name"))
     season = property(lambda self: self._season, dirty_setter("_season"))
     episode = property(lambda self: self._episode, dirty_setter("_episode"))
+    absolute_number = property(lambda self: self._absolute_number, dirty_setter("_absolute_number"))
     description = property(lambda self: self._description, dirty_setter("_description"))
     subtitles = property(lambda self: self._subtitles, dirty_setter("_subtitles"))
     subtitles_searchcount = property(lambda self: self._subtitles_searchcount, dirty_setter("_subtitles_searchcount"))
@@ -1134,11 +1235,16 @@ class TVEpisode(object):
     hastbn = property(lambda self: self._hastbn, dirty_setter("_hastbn"))
     status = property(lambda self: self._status, dirty_setter("_status"))
     tvdbid = property(lambda self: self._tvdbid, dirty_setter("_tvdbid"))
+    scene_season = property(lambda self: self._getSceneOrTVDBSeason(), dirty_setter("_scene_season"))
+    scene_episode = property(lambda self: self._getSceneOrTVDBEpisode(), dirty_setter("_scene_episode"))
+    scene_absolute_number = property(lambda self: self._getSceneOrTVDBAbsolute(), dirty_setter("_scene_absolute_number"))
     #location = property(lambda self: self._location, dirty_setter("_location"))
     file_size = property(lambda self: self._file_size, dirty_setter("_file_size"))
     release_name = property(lambda self: self._release_name, dirty_setter("_release_name"))
     is_proper = property(lambda self: self._is_proper, dirty_setter("_is_proper"))
 
+
+    
     def _set_location(self, new_location):
         logger.log(u"Setter sets location to " + new_location, logger.DEBUG)
         
@@ -1151,6 +1257,7 @@ class TVEpisode(object):
             self.file_size = 0
 
     location = property(lambda self: self._location, _set_location)
+    
     def refreshSubtitles(self):
         """Look for subtitles files and refresh the subtitles property"""
         self.subtitles = subtitles.subtitlesLanguages(self.location)
@@ -1195,6 +1302,24 @@ class TVEpisode(object):
         
         return subtitles
 
+    def _getSceneOrTVDBSeason(self):
+        if self._scene_season == None:
+            return self.season
+        else:
+            return self._scene_season
+
+    def _getSceneOrTVDBEpisode(self):
+        if self._scene_episode == None:
+            return self.episode
+        else:
+            return self._scene_episode
+
+    def _getSceneOrTVDBAbsolute(self):
+        if self._scene_absolute_number == None:
+            return self.absolute_number
+        else:
+            return self._scene_absolute_number
+
     def checkForMetaFiles(self):
 
         oldhasnfo = self.hasnfo
@@ -1227,7 +1352,12 @@ class TVEpisode(object):
     def specifyEpisode(self, season, episode):
 
         sqlResult = self.loadFromDB(season, episode)
-
+        # we need this because if the db loading is done with scene we change the acctuay ep ans season number
+        # and these numbers are not valid any more and have been replaced with tvdb numbers
+        if sqlResult:
+            season = self.season
+            episode = self.episode
+        
         if not sqlResult:
             # only load from NFO if we didn't load from DB
             if ek.ek(os.path.isfile, self.location):
@@ -1253,23 +1383,49 @@ class TVEpisode(object):
             self.saveToDB()
 
     def loadFromDB(self, season, episode):
-
-        logger.log(str(self.show.tvdbid) + ": Loading episode details from DB for episode " + str(season) + "x" + str(episode), logger.DEBUG)
-
+        msg = ''
+        if self.scene:
+            msg = "(mode: scene numbers)"
+        logger.log(str(self.show.tvdbid) + ": Loading episode details from DB for episode " + msg + " " + str(season) + "x" + str(episode), logger.DEBUG)
         myDB = db.DBConnection()
         sqlResults = myDB.select("SELECT * FROM tv_episodes WHERE showid = ? AND season = ? AND episode = ?", [self.show.tvdbid, season, episode])
 
-        if len(sqlResults) > 1:
-            raise exceptions.MultipleDBEpisodesException("Your DB has two records for the same show somehow.")
+        myDB = db.DBConnection()
+        if not self.scene:
+            sqlResults = myDB.select("SELECT * FROM tv_episodes WHERE showid = ? AND season = ? AND episode = ?", [self.show.tvdbid, season, episode])
+        else:
+            sqlResults = myDB.select("SELECT * FROM tv_episodes WHERE showid = ? AND scene_season = ? AND scene_episode = ?", [self.show.tvdbid, season, episode])
+            
+
+        if len(sqlResults) > 1 and not self.scene:
+            raise exceptions.MultipleDBEpisodesException("Your DB has two records for the same episode somehow."+msg)
+        elif len(sqlResults) > 1 and self.scene:
+            first = True
+            for relatedEP in sqlResults:
+                if first: # first shal be root ep
+                    first = False
+                    continue
+                logger.log(str(self.show.tvdbid) + ": Adding a related episode because of a scene mapping with tvdb numbers " + str(relatedEP["season"]) + "x" + str(relatedEP["episode"]), logger.DEBUG)
+
+                rel_ep_obj = TVEpisode(self.show, int(relatedEP["season"]), int(relatedEP["episode"]))
+                self.relatedEps.append(rel_ep_obj)
+
         elif len(sqlResults) == 0:
-            logger.log(str(self.show.tvdbid) + ": Episode " + str(self.season) + "x" + str(self.episode) + " not found in the database", logger.DEBUG)
+            logger.log(str(self.show.tvdbid) + ": Episode " + msg + str(self.season) + "x" + str(self.episode) + " not found in the database", logger.DEBUG)
             return False
         else:
             #NAMEIT logger.log(u"AAAAA from" + str(self.season)+"x"+str(self.episode) + " -" + self.name + " to " + str(sqlResults[0]["name"]))
             if sqlResults[0]["name"] != None:
                 self.name = sqlResults[0]["name"]
-            self.season = season
-            self.episode = episode
+
+            if not self.scene:
+                self.season = season
+                self.episode = episode
+            else:
+                self.season = int(sqlResults[0]["season"])
+                self.episode = int(sqlResults[0]["episode"])
+            self.absolute_number = sqlResults[0]["absolute_number"]
+
             self.description = sqlResults[0]["description"]
             if self.description == None:
                 self.description = ""
@@ -1297,6 +1453,20 @@ class TVEpisode(object):
             if sqlResults[0]["is_proper"]:
                 self.is_proper = int(sqlResults[0]["is_proper"])
 
+            # does one now a better way to test for NULL in the db field ?
+            if isinstance(sqlResults[0]["scene_season"], int):
+                self.scene_season = int(sqlResults[0]["scene_season"])
+
+            if isinstance(sqlResults[0]["scene_episode"], int):
+                self.scene_episode = int(sqlResults[0]["scene_episode"])
+                
+            if isinstance(sqlResults[0]["scene_absolute_number"], int):
+                self.scene_absolute_number = int(sqlResults[0]["scene_absolute_number"])
+
+            logger.log("Episode loading done " + msg + str(self.season) + "x" + str(self.episode) + "a" + str(self.absolute_number), logger.DEBUG)
+            logger.log("Episode loading done " + msg + str(self.scene_season) + "x" + str(self.scene_episode) + "a" + str(self.scene_absolute_number), logger.DEBUG)
+            
+            self.scene = False
             self.dirty = False
             return True
 
@@ -1313,6 +1483,7 @@ class TVEpisode(object):
 
         try:
             if cachedSeason is None:
+                logger.log(u"No chache for this episode", logger.DEBUG)
                 if tvapi is None:
                     # There's gotta be a better way of doing this but we don't wanna
                     # change the cache value elsewhere
@@ -1329,6 +1500,7 @@ class TVEpisode(object):
                     t = tvapi
                 myEp = t[self.show.tvdbid][season][episode]
             else:
+                logger.log(u"Chached for this episode", logger.DEBUG)
                 myEp = cachedSeason[episode]
 
         except (tvdb_exceptions.tvdb_error, IOError), e:
@@ -1347,7 +1519,6 @@ class TVEpisode(object):
                 self.deleteEpisode()
             return
 
-
         if not myEp["firstaired"] or myEp["firstaired"] == "0000-00-00":
             myEp["firstaired"] = str(datetime.date.fromordinal(1))
 
@@ -1357,11 +1528,18 @@ class TVEpisode(object):
             if self.tvdbid != -1:
                 self.deleteEpisode()
             return False
+        
+        if myEp["absolute_number"] == None or myEp["absolute_number"] == "":
+            logger.log(u"This episode ("+self.show.name+" - "+str(season)+"x"+str(episode)+") has no absolute number on TVDB", logger.DEBUG)
+        else: 
+            logger.log(str(self.show.tvdbid) + ": The absolute_number for " + str(season) + "x" + str(episode)+" is : "+myEp["absolute_number"], logger.DEBUG)
+            self.absolute_number = int(myEp["absolute_number"])
 
         #NAMEIT logger.log(u"BBBBBBBB from " + str(self.season)+"x"+str(self.episode) + " -" +self.name+" to "+myEp["episodename"])
         self.name = myEp["episodename"]
         self.season = season
         self.episode = episode
+        
         tmp_description = myEp["overview"]
         if tmp_description == None:
             self.description = ""
@@ -1398,8 +1576,11 @@ class TVEpisode(object):
             elif self.airdate == datetime.date.fromordinal(1):
                 if self.status == IGNORED:
                     logger.log(u"Episode has no air date, but it's already marked as ignored", logger.DEBUG)
+                elif self.season > 0 and self.show.getPreviuosAiredCount(self.season, self.episode):
+                    logger.log(u"Episode has no air date, it's not a special and we have previously aired episodes, automatically marking it unaired", logger.DEBUG)
+                    self.status = UNAIRED
                 else:
-                    logger.log(u"Episode has no air date, automatically marking it skipped", logger.DEBUG)
+                    logger.log(u"Episode has no air date and it's a special (or we dont have previously aired episodes), automatically marking it skipped", logger.DEBUG)
                     self.status = SKIPPED
             # if we don't have the file and the airdate is in the past
             else:
@@ -1553,7 +1734,7 @@ class TVEpisode(object):
         myDB.action(sql)
 
         raise exceptions.EpisodeDeletedException()
-
+            
     def saveToDB(self, forceSave=False):
         """
         Saves this episode to the database if any of its data has been changed since the last save.
@@ -1568,7 +1749,7 @@ class TVEpisode(object):
 
         logger.log(str(self.show.tvdbid) + ": Saving episode details to database", logger.DEBUG)
 
-        logger.log(u"STATUS IS " + str(self.status), logger.DEBUG)
+        logger.log(u"STATUS IS " + str(statusStrings[self.status]), logger.DEBUG)
 
         myDB = db.DBConnection()
         
@@ -1585,7 +1766,11 @@ class TVEpisode(object):
                         "location": self.location,
                         "file_size": self.file_size,
                         "release_name": self.release_name,
-                        "is_proper": self.is_proper}
+                        "is_proper": self.is_proper,
+                        "absolute_number": self.absolute_number,
+                        "scene_season": self._scene_season,
+                        "scene_episode": self._scene_episode,
+                        "scene_absolute_number": self._scene_absolute_number}
         controlValueDict = {"showid": self.show.tvdbid,
                             "season": self.season,
                             "episode": self.episode}
@@ -1598,17 +1783,142 @@ class TVEpisode(object):
             return None
         else:
             return ek.ek(os.path.join, self.show.location, self.location)
-
-    def prettyName(self):
+   
+    def getOverview(self):
+        return self.show.getOverview(self.status)
+        
+    def prettyName (self, naming_show_name=None,
+                        naming_ep_type=None,
+                        naming_multi_ep_type=None,
+                        naming_ep_name=None,
+                        naming_anime=None,
+                        naming_sep_type=None,
+                        naming_use_periods=None,
+                        naming_quality=None):
         """
         Returns the name of this episode in a "pretty" human-readable format. Used for logging
         and notifications and such.
-        
-        Returns: A string representing the episode's name and season/ep numbers 
         """
 
-        return self._format_pattern('%SN - %Sx%0E - %EN')
+        regex = "(.*) \(\d\)"
 
+        goodEpString = ''
+
+        self.relatedEps = sorted(self.relatedEps, key=lambda x: x.episode)
+
+        if len(self.relatedEps) == 0:
+            goodName = self.name
+
+        elif len(self.relatedEps) > 1:
+            goodName = ''
+
+        else:
+            singleName = True
+            curGoodName = None
+
+            for curName in [self.name]+[x.name for x in self.relatedEps]:
+                match = re.match(regex, curName)
+                if not match:
+                    singleName = False
+                    break
+
+                if curGoodName == None:
+                    curGoodName = match.group(1)
+                elif curGoodName != match.group(1):
+                    singleName = False
+                    break
+
+
+            if singleName:
+                goodName = curGoodName
+            else:
+                goodName = self.name
+                for relEp in self.relatedEps:
+                    goodName += " & " + relEp.name
+
+        if naming_show_name == None:
+            naming_show_name = sickbeard.NAMING_SHOW_NAME
+
+        if naming_ep_name == None:
+            naming_ep_name = sickbeard.NAMING_EP_NAME
+
+        if naming_ep_type == None:
+            naming_ep_type = sickbeard.NAMING_EP_TYPE
+            
+        if naming_anime == None:
+            naming_anime = sickbeard.NAMING_ANIME
+
+        if naming_multi_ep_type == None:
+            naming_multi_ep_type = sickbeard.NAMING_MULTI_EP_TYPE
+
+        if naming_sep_type == None:
+            naming_sep_type = sickbeard.NAMING_SEP_TYPE
+
+        if naming_use_periods == None:
+            naming_use_periods = sickbeard.NAMING_USE_PERIODS
+
+        if naming_quality == None:
+            naming_quality = sickbeard.NAMING_QUALITY
+        #episode string begin
+        if self.show.air_by_date and sickbeard.NAMING_DATES:
+            try:
+                goodEpString = self.airdate.strftime("%Y.%m.%d")
+            except ValueError:
+                pass
+             
+        # if we didn't set it to the air-by-date value use the season/ep
+        if not goodEpString:
+            goodEpString = config.naming_ep_type[naming_ep_type] % {'seasonnumber': self.season, 'episodenumber': self.episode}
+            
+            
+        for relEp in self.relatedEps:
+            goodEpString += config.naming_multi_ep_type[naming_multi_ep_type][naming_ep_type] % {'seasonnumber': relEp.season, 'episodenumber': relEp.episode}
+
+        # anime ?
+        if self.show.anime and naming_anime != 3:
+            #FIXME: this should be set on show creation !!
+            if self.absolute_number == 0:
+                curAbsolute_number = self.episode
+            else:
+                curAbsolute_number = self.absolute_number
+            
+            if self.season != 0: # dont set absolute numbers if we are on specials !
+                if naming_anime == 1: # this crazy person wants both ! (note: +=)
+                    goodEpString += config.naming_sep_type[naming_sep_type]+"%(#)03d" % {"#":curAbsolute_number}
+                elif naming_anime == 2: # total anime freak only need the absolute number ! (note: =)
+                    goodEpString = "%(#)03d" % {"#":curAbsolute_number}
+            
+                for relEp in self.relatedEps:
+                    if relEp.absolute_number != 0:
+                        goodEpString += "-"+"%(#)03d" % {"#":relEp.absolute_number}
+                    else:
+                        goodEpString += "-"+"%(#)03d" % {"#":relEp.episode}
+            
+        #episode string end
+        
+        if goodName != '':
+            goodName = config.naming_sep_type[naming_sep_type] + goodName
+
+        finalName = ""
+
+        if naming_show_name:
+            finalName += self.show.name + config.naming_sep_type[naming_sep_type]
+
+        finalName += goodEpString
+
+        if naming_ep_name:
+            finalName += goodName
+
+        if naming_quality:
+            epStatus, epQual = Quality.splitCompositeStatus(self.status) #@UnusedVariable
+            if epQual != Quality.NONE:
+                finalName += config.naming_sep_type[naming_sep_type] + Quality.qualityStrings[epQual]
+
+        if naming_use_periods:
+            finalName = re.sub("\s+", ".", finalName)
+
+        return finalName
+    
     def _ep_name(self):
         """
         Returns the name of the episode to use during renaming. Combines the names of related episodes.
@@ -1674,8 +1984,10 @@ class TVEpisode(object):
         def release_group(name):
             if not name:
                 return ''
-
-            np = NameParser(name)
+            if self.show.anime > 0:
+                np = NameParser(name, regexMode=NameParser.ALL_REGEX)
+            else:
+                np = NameParser(name)
 
             try:
                 parse_result = np.parse(name)
@@ -1708,6 +2020,9 @@ class TVEpisode(object):
                    '%0S': '%02d' % self.season,
                    '%E': str(self.episode),
                    '%0E': '%02d' % self.episode,
+                   '%A': '%d' % self.absolute_number,
+                   '%0A': '%02d' % self.absolute_number,
+                   '%00A': '%03d' % self.absolute_number,
                    '%RN': release_name(self.release_name),
                    '%RG': release_group(self.release_name),
                    '%AD': str(self.airdate).replace('-', ' '),
@@ -1764,6 +2079,7 @@ class TVEpisode(object):
             result_name = result_name.replace('%rg', 'sickbeard')
             logger.log(u"Episode has no release name, replacing it with a generic one: "+result_name, logger.DEBUG)
         
+        
         # split off ep name part only
         name_groups = re.split(r'[\\/]', result_name)
         
@@ -1780,12 +2096,16 @@ class TVEpisode(object):
                                 (?P<post_sep>[ _.-]*)
                               '''
             ep_only_regex = '(E?%0?E(?![._]?N))'
+            
+            anime_abs_regex = '(%(0){0,2}A)'
         
             # try the normal way
             season_ep_match = re.search(season_ep_regex, cur_name_group, re.I|re.X)
             ep_only_match = re.search(ep_only_regex, cur_name_group, re.I|re.X)
+            anime_abs_match = re.search(anime_abs_regex, cur_name_group, re.I|re.X)
             
             # if we have a season and episode then collect the necessary data
+            ep_format = None
             if season_ep_match:
                 season_format = season_ep_match.group(2)
                 ep_sep = season_ep_match.group(3)
@@ -1809,47 +2129,61 @@ class TVEpisode(object):
                 ep_format = ep_only_match.group(1)
                 sep = ''
                 regex_used = ep_only_regex
-
-            else:
-                continue
-
+            
+            anime_ep_format = None
+            if self.show.is_anime and anime_abs_match:
+                anime_ep_sep = '-'
+                anime_ep_format = anime_abs_match.group(1)
             # we need at least this much info to continue
-            if not ep_sep or not ep_format:
+            if not ep_format and not anime_ep_format:
                 continue
             
             # start with the ep string, eg. E03
-            ep_string = self._format_string(ep_format.upper(), replace_map)
+            if ep_format:
+                ep_string = self._format_string(ep_format.upper(), replace_map)
+            if anime_ep_format:
+                anime_ep_string = self._format_string(anime_ep_format.upper(), replace_map)
             for other_ep in self.relatedEps:
-                
-                # for limited extend we only append the last ep
-                if multi == NAMING_LIMITED_EXTEND and other_ep != self.relatedEps[-1]:
-                    continue
-                
-                elif multi == NAMING_DUPLICATE:
-                    # add " - S01"
-                    ep_string += sep + season_format
-                
-                elif multi == NAMING_SEPARATED_REPEAT:
-                    ep_string += sep
+                if ep_format:
+                    # for limited extend we only append the last ep
+                    if multi == NAMING_LIMITED_EXTEND and other_ep != self.relatedEps[-1]:
+                        continue
+                    
+                    elif multi == NAMING_DUPLICATE:
+                        # add " - S01"
+                        ep_string += sep + season_format
+                    
+                    elif multi == NAMING_SEPARATED_REPEAT:
+                        ep_string += sep
+    
+                    # add "E04"
+                    ep_string += ep_sep
+                    
+                    if multi == NAMING_LIMITED_EXTEND_E_PREFIXED:
+                        ep_string += 'E'
+                    
+                    ep_string += other_ep._format_string(ep_format.upper(), other_ep._replace_map())
+                if anime_ep_format:
+                    anime_ep_string += anime_ep_sep
+                    anime_ep_string += other_ep._format_string(anime_ep_format.upper(), other_ep._replace_map())
 
-                # add "E04"
-                ep_string += ep_sep
-                
-                if multi == NAMING_LIMITED_EXTEND_E_PREFIXED:
-                    ep_string += 'E'
-                
-                ep_string += other_ep._format_string(ep_format.upper(), other_ep._replace_map())
-
+            regex_replacement = None
             if season_ep_match:
                 regex_replacement = r'\g<pre_sep>\g<2>\g<3>' + ep_string + r'\g<post_sep>'
             elif ep_only_match:
                 regex_replacement = ep_string
-
-            # fill out the template for this piece and then insert this piece into the actual pattern
-            cur_name_group_result = re.sub('(?i)(?x)'+regex_used, regex_replacement, cur_name_group)
+            
+            if ep_format:
+                # fill out the template for this piece and then insert this piece into the actual pattern
+                cur_name_group_result = re.sub('(?i)(?x)'+regex_used, regex_replacement, cur_name_group)
+            if anime_ep_format:
+                if ep_format:
+                    cur_name_group_result = re.sub('(?i)(?x)'+anime_abs_regex, anime_ep_string, cur_name_group_result)
+                else:
+                    cur_name_group_result = re.sub('(?i)(?x)'+anime_abs_regex, anime_ep_string, cur_name_group)
+            result_name = result_name.replace(cur_name_group, cur_name_group_result)
             #cur_name_group_result = cur_name_group.replace(ep_format, ep_string)
             #logger.log(u"found "+ep_format+" as the ep pattern using "+regex_used+" and replaced it with "+regex_replacement+" to result in "+cur_name_group_result+" from "+cur_name_group, logger.DEBUG)
-            result_name = result_name.replace(cur_name_group, cur_name_group_result)
 
         result_name = self._format_string(result_name, replace_map)
         
@@ -1861,7 +2195,6 @@ class TVEpisode(object):
         """    
         Figures out the path where this episode SHOULD live according to the renaming rules, relative from the show dir
         """
-        
         result = self.formatted_filename()
 
         # if they want us to flatten it and we're allowed to flatten it then we will
@@ -1905,6 +2238,8 @@ class TVEpisode(object):
             # we only use ABD if it's enabled, this is an ABD show, AND this is not a multi-ep
             if self.show.air_by_date and sickbeard.NAMING_CUSTOM_ABD and not self.relatedEps:
                 pattern = sickbeard.NAMING_ABD_PATTERN
+            elif self.show.is_anime and sickbeard.NAMING_CUSTOM_ANIME:
+                pattern = sickbeard.NAMING_ANIME_PATTERN
             else:
                 pattern = sickbeard.NAMING_PATTERN
             
@@ -1975,3 +2310,77 @@ class TVEpisode(object):
             self.saveToDB()
             for relEp in self.relatedEps:
                 relEp.saveToDB()
+
+    def fixEpisodeNames(self):
+
+        if not os.path.isdir(self._location):
+            logger.log(str(self.tvdbid) + ": Show dir doesn't exist, can't rename episodes")
+            return
+
+        # load episodes from my folder
+        self.loadEpisodesFromDir()
+
+        logger.log(str(self.tvdbid) + ": Loading all episodes with a location from the database")
+
+        myDB = db.DBConnection()
+        sqlResults = myDB.select("SELECT * FROM tv_episodes WHERE showid = ? AND location != '' ORDER BY episode ASC", [self.tvdbid])
+
+        # build list of locations
+        fileLocations = {}
+        for epResult in sqlResults:
+            goodLoc = os.path.normpath(epResult["location"])
+            goodSeason = int(epResult["season"])
+            goodEpisode = int(epResult["episode"])
+            if fileLocations.has_key(goodLoc):
+                fileLocations[goodLoc].append((goodSeason, goodEpisode))
+            else:
+                fileLocations[goodLoc] = [(goodSeason, goodEpisode)]
+
+        logger.log(u"File results: " + str(fileLocations), logger.DEBUG)
+
+        for curLocation in fileLocations:
+
+            epList = fileLocations[curLocation]
+
+            # get the root episode and add all related episodes to it
+            rootEp = None
+            for myEp in epList:
+                curEp = self.getEpisode(myEp[0], myEp[1])
+                if rootEp == None:
+                    rootEp = curEp
+                    rootEp.relatedEps = []
+                else:
+                    rootEp.relatedEps.append(curEp)
+
+            goodName = rootEp.prettyName()
+            actualName = os.path.splitext(os.path.basename(curLocation))
+
+            if goodName == actualName[0]:
+                logger.log(str(self.tvdbid) + ": File " + rootEp.location + " is already named correctly, skipping", logger.DEBUG)
+                continue
+
+            with rootEp.lock:
+                result = helpers.rename_file(rootEp.location, rootEp.prettyName())
+                if result != False:
+                    rootEp.location = result
+                    for relEp in rootEp.relatedEps:
+                        relEp.location = result
+
+            fileList = postProcessor.PostProcessor(curLocation)._list_associated_files(curLocation)
+            logger.log(u"Files associated to "+curLocation+": "+str(fileList), logger.DEBUG)
+
+            for file in fileList:
+                result = helpers.rename_file(file, rootEp.prettyName())
+                if result == False:
+                    logger.log(str(self.tvdbid) + ": Unable to rename file "+file, logger.ERROR)
+
+            for curEp in [rootEp]+rootEp.relatedEps:
+                curEp.checkForMetaFiles()
+
+            with rootEp.lock:
+                rootEp.saveToDB()
+                for relEp in rootEp.relatedEps:
+                    relEp.saveToDB()
+            
+    
+

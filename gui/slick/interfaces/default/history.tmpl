@@ -71,6 +71,11 @@
           #else:
           <i>$match.group(1).upper()</i>
         #end if
+      #else
+	      #set $match = $re.search("\[(.*?)\]", $os.path.basename($hItem["resource"]))
+	   	  #if $match
+	          $match.group(1)
+	      #end if
       #end if
     #else
       #if $hItem["provider"] > 0

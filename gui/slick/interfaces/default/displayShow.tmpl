@@ -23,6 +23,7 @@
 <script type="text/javascript" src="$sbRoot/js/displayShow.js?$sbPID"></script>
 <script type="text/javascript" src="$sbRoot/js/plotTooltip.js?$sbPID"></script>
 <script type="text/javascript" src="$sbRoot/js/ajaxEpSearch.js?$sbPID"></script>
+<script type="text/javascript" src="$sbRoot/js/sceneExceptionsTooltip.js"></script>
 <script type="text/javascript" src="$sbRoot/js/ajaxEpSubtitles.js?$sbPID"></script>
 
 <div class="navShows">
@@ -30,8 +31,21 @@
 <div class="align-left"><b>Change Show:</b>
 <div class="navShow"><img id="prevShow" src="$sbRoot/images/prev.gif" alt="&lt;&lt;" title="Prev Show" /></div>
 <select id="pickShow">
-#for $curShow in $sortedShowList:
+#for $curShowList in $sortedShowList:
+#set $curShowType = $curShowList[0]
+#set $curShowList = $curShowList[1]
+
+#if len($sortedShowList) > 1:
+    <optgroup label="$curShowType">
+#end if
+
+#for $curShow in $curShowList:
 <option value="$curShow.tvdbid" #if $curShow == $show then "selected=\"selected\"" else ""#>$curShow.name</option>
+#end for
+
+#if len($sortedShowList) > 1:
+    </optgroup>
+#end if
 #end for
 </select>
 <div class="navShow"><img id="nextShow" src="$sbRoot/images/next.gif" alt="&gt;&gt;" title="Next Show" /></div>
@@ -150,8 +164,28 @@
     <tr><td class="showLegend">Flat Folders: </td><td><img src="$sbRoot/images/#if $show.flatten_folders == 1 or $sickbeard.NAMING_FORCE_FOLDERS then "yes16.png\" alt=\"Y" else "no16.png\" alt=\"N"#" width="16" height="16" /></td></tr>
     <tr><td class="showLegend">Paused: </td><td><img src="$sbRoot/images/#if int($show.paused) == 1 then "yes16.png\" alt=\"Y" else "no16.png\" alt=\"N"#" width="16" height="16" /></td></tr>
     <tr><td class="showLegend">Air-by-Date: </td><td><img src="$sbRoot/images/#if int($show.air_by_date) == 1 then "yes16.png\" alt=\"Y" else "no16.png\" alt=\"N"#" width="16" height="16" /></td></tr>
+
+#if $bwl.get_white_keywords_for("gloabl"):
+    <tr><td class="showLegend">Whitelist: </td><td>#echo ', '.join($bwl.get_white_keywords_for("gloabl"))#</td></tr>
+#end if
+#if $bwl.get_black_keywords_for("gloabl"):
+    <tr><td class="showLegend">Blacklist: </td><td>#echo  ', '.join($bwl.get_black_keywords_for("gloabl"))#</td></tr>
+#end if
+#if $bwl.get_white_keywords_for("release_group"):
+    <tr>
+        <td class="showLegend">Wanted Group#if len($bwl.get_white_keywords_for("release_group"))>1 then "s" else ""#:</td>
+        <td>#echo ', '.join($bwl.get_white_keywords_for("release_group"))#</td>
+    </tr>
+#end if
+#if $bwl.get_black_keywords_for("release_group"):
+    <tr>
+        <td class="showLegend">Unwanted Group#if len($bwl.get_black_keywords_for("release_group"))>1 then "s" else ""#:</td>
+        <td>#echo ', '.join($bwl.get_black_keywords_for("release_group"))#</td>
+    </tr>
+#end if
 </table>
 </td>
+
 </tr>
 </table>
 </div>
@@ -201,11 +235,25 @@
   #if int($epResult["season"]) != $curSeason:
   <tr><td colspan="9"  style="height: 0px; padding:0; margin:0;"><a name="season-$epResult["season"]"></a></td></tr>
   <tr class="seasonheader" id="season-$epResult["season"]" >
+  #if $show.is_anime and $showSceneNumberColum
+    <td colspan="11"> 
+  #elif $show.is_anime or $showSceneNumberColum
+    <td colspan="10">
+  #else
     <td colspan="9">
+  #end if
         <h2>#if int($epResult["season"]) == 0 then "Specials" else "Season "+str($epResult["season"])#</h2>
     </td>
   </tr>
-  <tr id="season-$epResult["season"]-cols"><th width="1%"><input type="checkbox" class="seasonCheck" id="$epResult["season"]" /></th><th>NFO</th><th>TBN</th><th>Episode</th><th>Name</th><th class="nowrap">Airdate</th><th>Filename</th>#if $sickbeard.USE_SUBTITLES and $show.subtitles then "<th>Subtitles</th>" else ""#<th>Status</th><th>Search</th></tr>
+  <tr id="season-$epResult["season"]-cols"><th width="1%"><input type="checkbox" class="seasonCheck" id="$epResult["season"]" /></th><th>NFO</th><th>TBN</th>
+  #if $showSceneNumberColum
+  <th>XEM</th>
+  #end if
+  #if $show.is_anime
+  <th>Absolute</th>
+  #end if
+  <th>Episode</th><th>Name</th><th class="nowrap">Airdate</th><th>Filename</th>
+  #if $sickbeard.USE_SUBTITLES and $show.subtitles then "<th>Subtitles</th>" else ""#<th>Status</th><th>Search</th></tr>
         #set $curSeason = int($epResult["season"])
   #end if    
 
@@ -219,6 +267,25 @@
     </td>
     <td align="center"><img src="$sbRoot/images/#if $epResult["hasnfo"] == 1 then "nfo.gif\" alt=\"Y" else "nfo-no.gif\" alt=\"N"#" width="23" height="11" /></td>
     <td align="center"><img src="$sbRoot/images/#if $epResult["hastbn"] == 1 then "tbn.gif\" alt=\"Y" else "tbn-no.gif\" alt=\"N"#" width="23" height="11" /></td>
+    #if $showSceneNumberColum
+    <td align="center">
+    #if isinstance($epResult["scene_season"], int) and isinstance($epResult["scene_episode"], int)
+    <img src="$sbRoot/images/scn.gif" alt="Y" width="16" height="16" title="Scene number $epResult["scene_season"] x $epResult["scene_episode"] a $epResult["scene_absolute_number"]"/>
+    #else
+    <img src="$sbRoot/images/scn-no.gif" alt="N" width="16" height="16" title="No scene number"/>
+    #end if
+    </td>
+    #end if
+    #if $show.is_anime
+	<td align="center">
+    #if $epResult["absolute_number"] == 0
+	-
+    #else	
+	$epResult["absolute_number"]
+    #end if
+    </td>
+    #end if
+
     <td align="center">$epResult["episode"]</td>
     <td class="title">
     #if $epResult["description"] != "" and $epResult["description"] != None:

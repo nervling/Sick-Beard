@@ -56,3 +56,10 @@ class AddNetworkTimezones(AddSceneNameCache):
 
     def execute(self):
         self.connection.action("CREATE TABLE network_timezones (network_name TEXT PRIMARY KEY, timezone TEXT)")
+
+class AddSceneExceptionsSeasons(AddSceneNameCache):
+    def test(self):
+        return self.hasColumn("scene_exceptions", "season")
+
+    def execute(self):
+        self.addColumn("scene_exceptions", "season", "NUMERIC", -1)

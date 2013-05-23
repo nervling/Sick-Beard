@@ -10,7 +10,8 @@ $(document).ready(function () {
                                                              anyQualities: anyQualArray.join(','),
                                                              bestQualities: bestQualArray.join(','),
                                                              defaultFlattenFolders: $('#flatten_folders').prop('checked'),
-                                                             subtitles: $('#subtitles').prop('checked') });
+                                                             subtitles: $('#subtitles').prop('checked'),
+                                                             anime: $('#anime').prop('checked')  });
                                                              
         $(this).attr('disabled', true);
         $.pnotify({
@@ -20,7 +21,7 @@ $(document).ready(function () {
         });
     });
 
-    $('#statusSelect, #qualityPreset, #flatten_folders, #anyQualities, #bestQualities, #subtitles').change(function () {
+    $('#statusSelect, #qualityPreset, #flatten_folders, #anyQualities, #bestQualities, #subtitles, #anime').change(function () {
         $('#saveDefaultsButton').attr('disabled', false);
     });
 

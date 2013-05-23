@@ -9,6 +9,7 @@ branches:
   only:
     - ThePirateBay
     - Pistachitos
+    - anime
 
 before_script: cd ./tests
 script: ./all_tests.py

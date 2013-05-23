@@ -50,9 +50,6 @@ class CheckVersion():
 
     def run(self):
         self.check_for_new_version()
-        
-        # refresh scene exceptions too
-        scene_exceptions.retrieve_exceptions()
 
         # refresh network timezones
         network_timezones.update_network_dict()
@@ -85,6 +82,10 @@ class CheckVersion():
         
         force: if true the VERSION_NOTIFY setting will be ignored and a check will be forced
         """
+
+        # refresh scene exceptions too
+        scene_exceptions.retrieve_exceptions()
+        ui.notifications.message('Updateing scene exceptions')
 
         if not sickbeard.VERSION_NOTIFY and not force:
             logger.log(u"Version checking is disabled, not checking for the newest version")
@@ -299,7 +300,7 @@ class GitUpdateManager(UpdateManager):
         branch = branch_info[0].strip().replace('refs/heads/', '', 1)
 
         return branch or 'master'
-
+    
 
     def _check_github_for_update(self):
         """
@@ -315,7 +316,7 @@ class GitUpdateManager(UpdateManager):
         gh = github.GitHub()
 
         # find newest commit
-        for curCommit in gh.commits('mr-orange', 'Sick-Beard', version.SICKBEARD_VERSION):
+        for curCommit in gh.commits('nervling', 'Sick-Beard', version.SICKBEARD_VERSION):
 
             if not self._newest_commit_hash:
                 self._newest_commit_hash = curCommit['sha']
@@ -344,9 +345,9 @@ class GitUpdateManager(UpdateManager):
             return
 
         if self._newest_commit_hash:
-            url = 'http://github.com/mr-orange/Sick-Beard/compare/'+self._cur_commit_hash+'...'+self._newest_commit_hash
+            url = 'http://github.com/nervling/Sick-Beard/compare/'+self._cur_commit_hash+'...'+self._newest_commit_hash
         else:
-            url = 'http://github.com/mr-orange/Sick-Beard/commits/'
+            url = 'http://github.com/nervling/Sick-Beard/commits/'
 
         new_str = 'There is a <a class="update" href="'+url+'" onclick="window.open(this.href); return false;">newer version available</a> ('+message+')'
         new_str += "&mdash; <a class=""update"" href=\""+self.get_update_url()+"\">Update Now</a>"
@@ -452,7 +453,7 @@ class SourceUpdateManager(GitUpdateManager):
         Downloads the latest source tarball from github and installs it over the existing version.
         """
 
-        tar_download_url = 'https://github.com/mr-orange/Sick-Beard/tarball/'+version.SICKBEARD_VERSION
+        tar_download_url = 'https://github.com/nervling/Sick-Beard/tarball/'+version.SICKBEARD_VERSION
         sb_update_dir = os.path.join(sickbeard.PROG_DIR, 'sb-update')
         version_path = os.path.join(sickbeard.PROG_DIR, 'version.txt')
 

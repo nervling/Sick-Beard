@@ -50,11 +50,14 @@ from sickbeard.common import Quality, Overview, statusStrings, qualityPresetStri
 from sickbeard.common import SNATCHED, SKIPPED, UNAIRED, IGNORED, ARCHIVED, WANTED
 from sickbeard.common import SD, HD720p, HD1080p
 from sickbeard.exceptions import ex
+from sickbeard.scene_exceptions import get_scene_exceptions, get_all_scene_exceptions
 from sickbeard.webapi import Api
 
 from lib.tvdb_api import tvdb_api
 from lib.dateutil import tz
 
+from sickbeard.blackandwhitelist import *
+from lib import adba
 import subliminal
 
 import network_timezones
@@ -512,6 +515,9 @@ class Manage:
         paused_all_same = True
         last_paused = None
         
+        anime_all_same = True
+        last_anime = None
+
         quality_all_same = True
         last_quality = None
         
@@ -534,6 +540,13 @@ class Manage:
                 else:
                     last_paused = curShow.paused
 
+            if anime_all_same:
+                # if we had a value already and this value is different then they're not all the same
+                if last_anime not in (curShow.is_anime, None):
+                    anime_all_same = False
+                else:
+                    last_anime = curShow.is_anime
+
             if flatten_folders_all_same:
                 if last_flatten_folders not in (None, curShow.flatten_folders):
                     flatten_folders_all_same = False
@@ -555,6 +568,7 @@ class Manage:
         t.showList = toEdit
         t.paused_value = last_paused if paused_all_same else None
         t.flatten_folders_value = last_flatten_folders if flatten_folders_all_same else None
+        t.anime_value = last_anime if anime_all_same else None
         t.quality_value = last_quality if quality_all_same else None
         t.subtitles_value = last_subtitles if subtitles_all_same else None
         t.root_dir_list = root_dir_list
@@ -562,7 +576,7 @@ class Manage:
         return _munge(t)
 
     @cherrypy.expose
-    def massEditSubmit(self, paused=None, flatten_folders=None, quality_preset=False, subtitles=None,
+    def massEditSubmit(self, paused=None, anime=None, flatten_folders=None, quality_preset=False, subtitles=None,
                        anyQualities=[], bestQualities=[], toEdit=None, *args, **kwargs):
 
         dir_map = {}
@@ -594,6 +608,12 @@ class Manage:
             else:
                 new_paused = True if paused == 'enable' else False
             new_paused = 'on' if new_paused else 'off'
+            
+            if anime == 'keep':
+                new_anime = showObj.is_anime
+            else:
+                new_anime = True if anime == 'enable' else False
+            new_anime = 'on' if new_anime else 'off'
 
             if flatten_folders == 'keep':
                 new_flatten_folders = showObj.flatten_folders
@@ -613,7 +633,7 @@ class Manage:
 
             exceptions_list = []
             
-            curErrors += Home().editShow(curShow, new_show_dir, anyQualities, bestQualities, exceptions_list, new_flatten_folders, new_paused, subtitles=new_subtitles, directCall=True)
+            curErrors += Home().editShow(curShow, new_show_dir, anyQualities, bestQualities, exceptions_list, new_flatten_folders, new_paused, new_anime, subtitles=new_subtitles, directCall=True)
 
             if curErrors:
                 logger.log(u"Errors: "+str(curErrors), logger.ERROR)
@@ -784,6 +804,7 @@ ConfigMenu = [
     { 'title': 'Subtitles Settings','path': 'config/subtitles/'        },
     { 'title': 'Post Processing',   'path': 'config/postProcessing/'   },
     { 'title': 'Notifications',     'path': 'config/notifications/'    },
+    { 'title': 'Anime',             'path': 'config/anime/'    },
 ]
 
 class ConfigGeneral:
@@ -800,7 +821,7 @@ class ConfigGeneral:
         sickbeard.ROOT_DIRS = rootDirString
     
     @cherrypy.expose
-    def saveAddShowDefaults(self, defaultFlattenFolders, defaultStatus, anyQualities, bestQualities, subtitles):
+    def saveAddShowDefaults(self, defaultFlattenFolders, defaultStatus, anyQualities, bestQualities, subtitles, anime):
 
         if anyQualities:
             anyQualities = anyQualities.split(',')
@@ -821,7 +842,7 @@ class ConfigGeneral:
             defaultFlattenFolders = 1
         else:
             defaultFlattenFolders = 0
-
+            
         sickbeard.FLATTEN_FOLDERS_DEFAULT = int(defaultFlattenFolders)
 
         if subtitles == "true":
@@ -829,6 +850,13 @@ class ConfigGeneral:
         else:
             subtitles = 0
         sickbeard.SUBTITLES_DEFAULT = int(subtitles)
+        
+        if anime == "true":
+            anime = 1
+        else:
+            anime = 0
+
+        sickbeard.ANIME_DEFAULT = int(anime)
 
     @cherrypy.expose
     def generateKey(self):
@@ -1070,12 +1098,14 @@ class ConfigPostProcessing:
     def savePostProcessing(self, naming_pattern=None, naming_multi_ep=None,
                     xbmc_data=None, mediabrowser_data=None, synology_data=None, sony_ps3_data=None, wdtv_data=None, tivo_data=None, mede8er_data=None,
                     use_banner=None, keep_processed_dir=None, process_automatically=None, rename_episodes=None,
-                    move_associated_files=None, tv_download_dir=None, naming_custom_abd=None, naming_abd_pattern=None, naming_strip_year=None):
+                    move_associated_files=None, tv_download_dir=None, naming_custom_abd=None, naming_abd_pattern=None, naming_strip_year=None,
+                    naming_custom_anime=None, naming_anime_pattern=None, naming_anime_multi_ep=None):
 
         results = []
 
         if not config.change_TV_DOWNLOAD_DIR(tv_download_dir):
             results += ["Unable to create directory " + os.path.normpath(tv_download_dir) + ", dir not changed."]
+
 
         if use_banner == "on":
             use_banner = 1
@@ -1106,6 +1136,11 @@ class ConfigPostProcessing:
             naming_custom_abd = 1
         else:
             naming_custom_abd = 0
+
+        if naming_custom_anime == "on":
+            naming_custom_anime = 1
+        else:
+            naming_custom_anime = 0
             
         if naming_strip_year == "on":
             naming_strip_year = 1
@@ -1117,6 +1152,7 @@ class ConfigPostProcessing:
         sickbeard.RENAME_EPISODES = rename_episodes
         sickbeard.MOVE_ASSOCIATED_FILES = move_associated_files
         sickbeard.NAMING_CUSTOM_ABD = naming_custom_abd
+        sickbeard.NAMING_CUSTOM_ANIME = naming_custom_anime
         sickbeard.NAMING_STRIP_YEAR = naming_strip_year
 
         sickbeard.metadata_provider_dict['XBMC'].set_config(xbmc_data)
@@ -1133,6 +1169,13 @@ class ConfigPostProcessing:
             sickbeard.NAMING_FORCE_FOLDERS = naming.check_force_season_folders()
         else:
             results.append("You tried saving an invalid naming config, not saving your naming settings")
+         #TODO ANIME MULTIEPP
+        if self.isNamingValid(naming_anime_pattern, naming_anime_multi_ep, anime = True) != "invalid":
+            sickbeard.NAMING_ANIME_PATTERN = naming_anime_pattern
+            sickbeard.NAMING_ANIME_MULTI_EP = int(naming_anime_multi_ep)
+            sickbeard.NAMING_FORCE_FOLDERS = naming.check_force_season_folders()
+        else:
+            results.append("You tried saving an invalid anime naming config, not saving your naming settings")
 
         if self.isNamingValid(naming_abd_pattern, None, True) != "invalid":
             sickbeard.NAMING_ABD_PATTERN = naming_abd_pattern
@@ -1154,19 +1197,19 @@ class ConfigPostProcessing:
         redirect("/config/postProcessing/")
 
     @cherrypy.expose
-    def testNaming(self, pattern=None, multi=None, abd=False):
+    def testNaming(self, pattern=None, multi=None, abd=False, anime=False):
 
         if multi != None:
             multi = int(multi)
 
-        result = naming.test_name(pattern, multi, abd)
-
+        result = naming.test_name(pattern, multi, abd, anime)
+        
         result = ek.ek(os.path.join, result['dir'], result['name']) 
 
         return result
     
     @cherrypy.expose
-    def isNamingValid(self, pattern=None, multi=None, abd=False):
+    def isNamingValid(self, pattern=None, multi=None, abd=False, anime=False):
         if pattern == None:
             return "invalid"
         
@@ -1174,13 +1217,13 @@ class ConfigPostProcessing:
         if abd:
             is_valid = naming.check_valid_abd_naming(pattern)
             require_season_folders = False
-
         else:
             # check validity of single and multi ep cases for the whole path
-            is_valid = naming.check_valid_naming(pattern, multi)
+            is_valid = naming.check_valid_naming(pattern, multi, anime)
+         
     
             # check validity of single and multi ep cases for only the file name
-            require_season_folders = naming.check_force_season_folders(pattern, multi)
+            require_season_folders = naming.check_force_season_folders(pattern, multi, anime)
 
         if is_valid and not require_season_folders:
             return "valid"
@@ -1342,6 +1385,8 @@ class ConfigProviders:
                 sickbeard.TVTORRENTS = curEnabled
             elif curProvider == 'torrentleech':
                 sickbeard.TORRENTLEECH = curEnabled
+            elif curProvider == 'fanzub':
+                sickbeard.FANZUB = curEnabled
             elif curProvider == 'btn':
                 sickbeard.BTN = curEnabled
             elif curProvider in newznabProviderDict:
@@ -1427,6 +1472,9 @@ class ConfigProviders:
 
         sickbeard.NZBSRUS_UID = nzbs_r_us_uid.strip()
         sickbeard.NZBSRUS_HASH = nzbs_r_us_hash.strip()
+
+        sickbeard.NZBMATRIX_USERNAME = nzbmatrix_username
+        sickbeard.NZBMATRIX_APIKEY = nzbmatrix_apikey.strip()
         
         sickbeard.OMGWTFNZBS_UID = omgwtfnzbs_uid.strip()
         sickbeard.OMGWTFNZBS_KEY = omgwtfnzbs_key.strip()
@@ -1945,6 +1993,53 @@ class ConfigNotifications:
 
         redirect("/config/notifications/")
 
+class ConfigAnime:
+
+    @cherrypy.expose
+    def index(self):
+
+        t = PageTemplate(file="config_anime.tmpl")
+        t.submenu = ConfigMenu
+        return _munge(t)
+
+    @cherrypy.expose
+    def saveAnime(self, use_anidb=None, anidb_username=None, anidb_password=None, anidb_use_mylist=None, split_home=None):
+
+        results = []
+
+        if use_anidb == "on":
+            use_anidb = 1
+        else:
+            use_anidb = 0
+
+        if anidb_use_mylist == "on":
+            anidb_use_mylist = 1
+        else:
+            anidb_use_mylist = 0
+
+        if split_home == "on":
+            split_home = 1
+        else:
+            split_home = 0
+
+        sickbeard.USE_ANIDB = use_anidb
+        sickbeard.ANIDB_USERNAME = anidb_username
+        sickbeard.ANIDB_PASSWORD = anidb_password
+        sickbeard.ANIDB_USE_MYLIST = anidb_use_mylist
+        sickbeard.ANIME_SPLIT_HOME = split_home
+
+        sickbeard.save_config()
+
+        if len(results) > 0:
+            for x in results:
+                logger.log(x, logger.ERROR)
+            ui.notifications.error('Error(s) Saving Configuration',
+                        '<br />\n'.join(results))
+        else:
+            ui.notifications.message('Configuration Saved', ek.ek(os.path.join, sickbeard.CONFIG_FILE) )
+
+        redirect("/config/anime/")
+        
 class ConfigSubtitles:
 
     @cherrypy.expose
@@ -2045,6 +2140,8 @@ class Config:
     notifications = ConfigNotifications()
 
     subtitles = ConfigSubtitles()
+    
+    anime = ConfigAnime()
 
 def haveXBMC():
     return sickbeard.USE_XBMC and sickbeard.XBMC_UPDATE_LIBRARY
@@ -2281,7 +2378,7 @@ class NewHomeAddShows:
     @cherrypy.expose
     def addNewShow(self, whichSeries=None, tvdbLang="en", rootDir=None, defaultStatus=None,
                    anyQualities=None, bestQualities=None, flatten_folders=None, subtitles=None,
-                   fullShowPath=None, other_shows=None, skipShow=None):
+                   fullShowPath=None, other_shows=None, skipShow=None, anime=None):
         """
         Receive tvdb id, dir, and other options and create a show from them. If extra show dirs are
         provided then it forwards back to newShow, if not it goes to /home.
@@ -2354,6 +2451,11 @@ class NewHomeAddShows:
             subtitles = 1
         else:
             subtitles = 0
+            
+        if anime == "on":
+            anime = 1
+        else:
+            anime = 0
         
         if not anyQualities:
             anyQualities = []
@@ -2366,7 +2468,7 @@ class NewHomeAddShows:
         newQuality = Quality.combineQualities(map(helpers.tryInt, anyQualities), map(helpers.tryInt, bestQualities))
         
         # add the show
-        sickbeard.showQueueScheduler.action.addShow(tvdb_id, show_dir, int(defaultStatus), newQuality, flatten_folders, subtitles, tvdbLang) #@UndefinedVariable
+        sickbeard.showQueueScheduler.action.addShow(tvdb_id, show_dir, int(defaultStatus), newQuality, flatten_folders, subtitles, tvdbLang, anime) #UndefinedVariable
         ui.notifications.message('Show added', 'Adding the specified show into '+show_dir)
 
         return finishAddShow()
@@ -2553,6 +2655,18 @@ class Home:
     def index(self):
 
         t = PageTemplate(file="home.tmpl")
+        if sickbeard.ANIME_SPLIT_HOME:
+            shows = []
+            anime = []
+            for show in sickbeard.showList:
+                if show.is_anime:
+                    anime.append(show)
+                else:
+                    shows.append(show)
+            t.showlists = [["Shows",shows],
+                           ["Anime",anime]]
+        else:
+            t.showlists = [["Shows",sickbeard.showList]]
         t.submenu = HomeMenu()
         return _munge(t)
 
@@ -2921,11 +3035,15 @@ class Home:
         epCounts[Overview.UNAIRED] = 0
         epCounts[Overview.SNATCHED] = 0
 
+        showSceneNumberColum = False
         for curResult in sqlResults:
+            if not showSceneNumberColum and (isinstance(curResult["scene_season"], int) and isinstance(curResult["scene_episode"], int)):
+                showSceneNumberColum = True
 
             curEpCat = showObj.getOverview(int(curResult["status"]))
             epCats[str(curResult["season"])+"x"+str(curResult["episode"])] = curEpCat
             epCounts[curEpCat] += 1
+        t.showSceneNumberColum = showSceneNumberColum
 
         def titler(x):
             if not x  or sickbeard.SORT_ARTICLE:
@@ -2937,7 +3055,22 @@ class Home:
             elif x.lower().startswith('the '):
                 x = x[4:]
             return x
-        t.sortedShowList = sorted(sickbeard.showList, lambda x, y: cmp(titler(x.name), titler(y.name)))
+
+        if sickbeard.ANIME_SPLIT_HOME:
+            shows = []
+            anime = []
+            for show in sickbeard.showList:
+                if show.is_anime:
+                    anime.append(show)
+                else:
+                    shows.append(show)
+            t.sortedShowList = [["Shows",sorted(shows, lambda x, y: cmp(titler(x.name), titler(y.name)))],
+                           ["Anime",sorted(anime, lambda x, y: cmp(titler(x.name), titler(y.name)))]]
+        else:
+            t.sortedShowList = [["Shows",sorted(sickbeard.showList, lambda x, y: cmp(titler(x.name), titler(y.name)))]]
+
+
+        t.bwl = BlackAndWhiteList(showObj.tvdbid)
 
         t.epCounts = epCounts
         t.epCats = epCats
@@ -2950,7 +3083,21 @@ class Home:
         return result['description'] if result else 'Episode not found.'
 
     @cherrypy.expose
-    def editShow(self, show=None, location=None, anyQualities=[], bestQualities=[], exceptions_list=[], flatten_folders=None, paused=None, directCall=False, air_by_date=None, tvdbLang=None, subtitles=None):
+    def sceneExceptions(self, show):
+        exceptionsList = get_all_scene_exceptions(show)
+        if not exceptionsList:
+            return "No scene exceptions"
+
+        out = []
+        for season, names in iter(sorted(exceptionsList.iteritems())):
+            if season == -1:
+                season = "*"
+            out.append("S" + str(season) + ": " + ", ".join(names))
+        return "<br/>".join(out)
+
+    @cherrypy.expose
+    def editShow(self, show=None, location=None, anyQualities=[], bestQualities=[], exceptions_list=[], flatten_folders=None, paused=None, anime=None, blackWords=None, whiteWords=None, blacklist=None, whitelist=None, directCall=False, air_by_date=None, tvdbLang=None, subtitles=None):
+
 
         if show == None:
             errString = "Invalid show ID: "+str(show)
@@ -2971,9 +3118,33 @@ class Home:
         showObj.exceptions = scene_exceptions.get_scene_exceptions(showObj.tvdbid)
 
         if not location and not anyQualities and not bestQualities and not flatten_folders:
-
+            
             t = PageTemplate(file="editShow.tmpl")
             t.submenu = HomeMenu()
+
+            bwl = BlackAndWhiteList(showObj.tvdbid)
+            t.whiteWords = ""
+            if "global" in bwl.whiteDict:
+                t.whiteWords = ", ".join(bwl.whiteDict["global"])
+            t.blackWords = ""
+            if "global" in bwl.blackDict:
+                t.blackWords = ", ".join(bwl.blackDict["global"])
+
+            if showObj.is_anime:
+
+                t.whitelist = []
+                if bwl.whiteDict.has_key("release_group"):
+                    t.whitelist = bwl.whiteDict["release_group"]
+                
+                t.blacklist = []
+                if bwl.blackDict.has_key("release_group"):
+                    t.blacklist = bwl.blackDict["release_group"]
+                
+                t.groups = []
+                if helpers.set_up_anidb_connection():
+                    anime = adba.Anime(sickbeard.ADBA_CONNECTION,name=showObj.name)
+                    t.groups = anime.get_groups()
+
             with showObj.lock:
                 t.show = showObj
 
@@ -2990,6 +3161,11 @@ class Home:
             paused = 1
         else:
             paused = 0
+            
+        if anime == "on":
+            anime = 1
+        else:
+            anime = 0
 
         if air_by_date == "on":
             air_by_date = 1
@@ -3029,7 +3205,57 @@ class Home:
             if set(exceptions_list) == set(showObj.exceptions):
                 do_update_exceptions = False
             else:
-                do_update_exceptions = True
+                do_update_exceptions = True    
+            
+
+        bwl = BlackAndWhiteList(showObj.tvdbid)
+        if whitelist:
+            whitelist = whitelist.split(",")
+            shortWhiteList = []
+            if helpers.set_up_anidb_connection():
+                for groupName in whitelist:
+                    group = sickbeard.ADBA_CONNECTION.group(gname=groupName)
+                    for line in group.datalines:
+                        if line["shortname"]:
+                            shortWhiteList.append(line["shortname"])
+                    else:
+                        if not groupName in shortWhiteList:
+                            shortWhiteList.append(groupName) 
+            else:
+                shortWhiteList = whitelist
+            bwl.set_white_keywords_for("release_group", shortWhiteList)
+        else:
+            bwl.set_white_keywords_for("release_group", [])
+
+        if blacklist:
+            blacklist = blacklist.split(",")
+            shortBlacklist = []
+            if helpers.set_up_anidb_connection():
+                for groupName in blacklist:
+                    group = sickbeard.ADBA_CONNECTION.group(gname=groupName)
+                    for line in group.datalines:
+                        if line["shortname"]:
+                            shortBlacklist.append(line["shortname"])
+                    else:
+                        if not groupName in shortBlacklist:
+                            shortBlacklist.append(groupName)
+            else:
+                shortBlacklist = blacklist
+            bwl.set_black_keywords_for("release_group", shortBlacklist)
+        else:
+            bwl.set_black_keywords_for("release_group", [])
+
+        if whiteWords:
+            whiteWords = [x.strip() for x in whiteWords.split(",")]
+            bwl.set_white_keywords_for("global", whiteWords)
+        else:
+            bwl.set_white_keywords_for("global", [])
+
+        if blackWords:
+            blackWords = [x.strip() for x in blackWords.split(",")]
+            bwl.set_black_keywords_for("global", blackWords)
+        else:
+            bwl.set_black_keywords_for("global", [])
 
         errors = []
         with showObj.lock:
@@ -3047,6 +3273,7 @@ class Home:
             showObj.paused = paused
             showObj.air_by_date = air_by_date
             showObj.subtitles = subtitles
+            showObj.anime = anime
             showObj.lang = tvdb_lang
 
             # if we change location clear the db of episodes, change it, write to db, and rescan
@@ -3163,7 +3390,6 @@ class Home:
 
     @cherrypy.expose
     def subtitleShow(self, show=None, force=0):
-
         if show == None:
             return _genericMessage("Error", "Invalid show ID")
 
@@ -3178,6 +3404,8 @@ class Home:
         time.sleep(3)
 
         redirect("/home/displayShow?show="+str(showObj.tvdbid))
+
+
 
     
     @cherrypy.expose

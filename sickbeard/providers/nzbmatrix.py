@@ -45,8 +45,8 @@ class NZBMatrixProvider(generic.NZBProvider):
     def isEnabled(self):
         return sickbeard.NZBMATRIX
 
-    def _get_season_search_strings(self, show, season):
-        sceneSearchStrings = set(show_name_helpers.makeSceneSeasonSearchString(show, season, "nzbmatrix"))
+    def _get_season_search_strings(self, show, season, scene=False):
+        sceneSearchStrings = set(show_name_helpers.makeSceneSeasonSearchString(show, season, extraSearchType="nzbmatrix", scene=scene))
 
         # search for all show names and episode numbers like ("a","b","c") in a single search
         return [' '.join(sceneSearchStrings)]
@@ -55,7 +55,11 @@ class NZBMatrixProvider(generic.NZBProvider):
 
         sceneSearchStrings = set(show_name_helpers.makeSceneSearchString(ep_obj))
 
-        # search for all show names and episode numbers like ("a","b","c") in a single search
+        # search for all show names and episode numbers like (%2b"show-a"%2b"episode-a")+(%2b"show-b"%2b"episode-b") in a single search
+        nzbMatrixSearchStrings = []
+        for searchString in sceneSearchStrings:
+            searchWords = searchString.split('.')
+            nzbMatrixSearchStrings.append('(+"' + '"+"'.join(searchWords) + '")')
         return ['("' + '","'.join(sceneSearchStrings) + '")']
 
     def _doSearch(self, curString, quotes=False, show=None):
@@ -70,9 +74,13 @@ class NZBMatrixProvider(generic.NZBProvider):
                   "username": sickbeard.NZBMATRIX_USERNAME,
                   "apikey": sickbeard.NZBMATRIX_APIKEY,
                   "subcat": "6,41",
-                  "english": 1,
                   "ssl": 1,
                   "scenename": 1}
+        if show and show.is_anime:
+            params["subcat"] = "28"
+        else:
+            params["english"] = 1
+            
 
         # don't allow it to be missing
         if not params['maxage']:

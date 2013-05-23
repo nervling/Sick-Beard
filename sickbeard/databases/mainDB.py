@@ -716,3 +716,65 @@ class AddEmailSubscriptionTable(AddProperNamingSupport):
         # cleanup and reduce db if any previous data was removed
         logger.log(u"Performing a vacuum on the database.", logger.DEBUG)
         self.connection.action("VACUUM")
+        
+class AddAbsoluteEpisodeTVShow(FixAirByDateSetting):
+    def test(self):
+        return self.hasColumn("tv_shows", "anime")
+
+    def execute(self):
+        self.addColumn("tv_shows", "anime", "NUMERIC", "0")
+        
+class AddAbsoluteEpisodeTVEpisode(AddAbsoluteEpisodeTVShow):
+    def test(self):
+        return self.hasColumn("tv_episodes", "absolute_number")
+
+    def execute(self):
+        self.addColumn("tv_episodes", "absolute_number", "NUMERIC", "NULL")
+        
+class Blacklist(AddAbsoluteEpisodeTVShow):
+
+    def test(self):
+        return self.hasTable("blacklist")
+        #and self.hasTable("whitelist")
+
+    def execute(self):
+
+        query = "CREATE TABLE blacklist (show_id INTEGER, range TEXT, keyword TEXT);"
+        self.connection.action(query)
+        #self.incDBVersion()
+
+class Whitelist(Blacklist):
+
+    def test(self):
+        return self.hasTable("whitelist")
+        #and self.hasTable("whitelist")
+
+    def execute(self):
+
+        query = "CREATE TABLE whitelist (show_id INTEGER, range TEXT, keyword TEXT);"
+        self.connection.action(query)
+        #self.incDBVersion()
+
+class AddSceneNumbers(Whitelist):
+
+    def test(self):
+        return self.checkDBVersion() >= 17
+
+    def execute(self):
+
+        self.addColumn("tv_episodes", "scene_episode", "NUMERIC", "NULL")
+        self.addColumn("tv_episodes", "scene_season", "NUMERIC", "NULL")
+
+        self.incDBVersion()
+
+class AddSceneNumbersAbsolute(AddSceneNumbers):
+
+    def test(self):
+        return self.checkDBVersion() >= 18
+
+    def execute(self):
+
+        self.addColumn("tv_episodes", "scene_absolute_number", "NUMERIC", "NULL")
+
+        self.incDBVersion()
+
