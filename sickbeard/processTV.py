@@ -147,7 +147,7 @@ def processDir (dirName, nzbName=None, recurse=False):
                     
             #Delete all file not needed
             for cur_file in notwantedFiles:
-                if sickbeard.KEEP_PROCESSED_DIR or not process_result:
+                if sickbeard.PROCESS_METHOD != "move" or not process_result:
                     break
 
                 cur_file_path = ek.ek(os.path.join, processPath, cur_file)
@@ -161,7 +161,7 @@ def processDir (dirName, nzbName=None, recurse=False):
 
                 returnStr += processor.log
 
-            if not sickbeard.KEEP_PROCESSED_DIR and \
+            if sickbeard.PROCESS_METHOD == "move" and \
             ek.ek(os.path.normpath, processPath) != ek.ek(os.path.normpath, sickbeard.TV_DOWNLOAD_DIR):
             
                 if not ek.ek(os.listdir, processPath) == []:
