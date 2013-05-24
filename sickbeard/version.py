@@ -1,1 +1,1 @@
-SICKBEARD_VERSION = "ThePirateBay_Anime"
+SICKBEARD_VERSION = "TPB+Anime"

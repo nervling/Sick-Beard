@@ -51,7 +51,7 @@ def get_scene_exceptions(tvdb_id, season=-1):
             excpetionCache[tvdb_id] = {}
         excpetionCache[tvdb_id][season] = exceptionsList
     else:
-        exceptionsList = excpetionCache[tvdb_id][season]
+        exceptionsList = list(excpetionCache[tvdb_id][season])
 
     if season == 1: # if we where looking for season 1 we can add generic names
         exceptionsList += get_scene_exceptions(tvdb_id, season=-1)

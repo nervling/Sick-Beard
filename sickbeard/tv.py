@@ -1787,137 +1787,15 @@ class TVEpisode(object):
     def getOverview(self):
         return self.show.getOverview(self.status)
         
-    def prettyName (self, naming_show_name=None,
-                        naming_ep_type=None,
-                        naming_multi_ep_type=None,
-                        naming_ep_name=None,
-                        naming_anime=None,
-                        naming_sep_type=None,
-                        naming_use_periods=None,
-                        naming_quality=None):
+    def prettyName (self):
         """
         Returns the name of this episode in a "pretty" human-readable format. Used for logging
         and notifications and such.
+        
+        Returns: A string representing the episode's name and season/ep numbers 
         """
 
-        regex = "(.*) \(\d\)"
-
-        goodEpString = ''
-
-        self.relatedEps = sorted(self.relatedEps, key=lambda x: x.episode)
-
-        if len(self.relatedEps) == 0:
-            goodName = self.name
-
-        elif len(self.relatedEps) > 1:
-            goodName = ''
-
-        else:
-            singleName = True
-            curGoodName = None
-
-            for curName in [self.name]+[x.name for x in self.relatedEps]:
-                match = re.match(regex, curName)
-                if not match:
-                    singleName = False
-                    break
-
-                if curGoodName == None:
-                    curGoodName = match.group(1)
-                elif curGoodName != match.group(1):
-                    singleName = False
-                    break
-
-
-            if singleName:
-                goodName = curGoodName
-            else:
-                goodName = self.name
-                for relEp in self.relatedEps:
-                    goodName += " & " + relEp.name
-
-        if naming_show_name == None:
-            naming_show_name = sickbeard.NAMING_SHOW_NAME
-
-        if naming_ep_name == None:
-            naming_ep_name = sickbeard.NAMING_EP_NAME
-
-        if naming_ep_type == None:
-            naming_ep_type = sickbeard.NAMING_EP_TYPE
-            
-        if naming_anime == None:
-            naming_anime = sickbeard.NAMING_ANIME
-
-        if naming_multi_ep_type == None:
-            naming_multi_ep_type = sickbeard.NAMING_MULTI_EP_TYPE
-
-        if naming_sep_type == None:
-            naming_sep_type = sickbeard.NAMING_SEP_TYPE
-
-        if naming_use_periods == None:
-            naming_use_periods = sickbeard.NAMING_USE_PERIODS
-
-        if naming_quality == None:
-            naming_quality = sickbeard.NAMING_QUALITY
-        #episode string begin
-        if self.show.air_by_date and sickbeard.NAMING_DATES:
-            try:
-                goodEpString = self.airdate.strftime("%Y.%m.%d")
-            except ValueError:
-                pass
-             
-        # if we didn't set it to the air-by-date value use the season/ep
-        if not goodEpString:
-            goodEpString = config.naming_ep_type[naming_ep_type] % {'seasonnumber': self.season, 'episodenumber': self.episode}
-            
-            
-        for relEp in self.relatedEps:
-            goodEpString += config.naming_multi_ep_type[naming_multi_ep_type][naming_ep_type] % {'seasonnumber': relEp.season, 'episodenumber': relEp.episode}
-
-        # anime ?
-        if self.show.anime and naming_anime != 3:
-            #FIXME: this should be set on show creation !!
-            if self.absolute_number == 0:
-                curAbsolute_number = self.episode
-            else:
-                curAbsolute_number = self.absolute_number
-            
-            if self.season != 0: # dont set absolute numbers if we are on specials !
-                if naming_anime == 1: # this crazy person wants both ! (note: +=)
-                    goodEpString += config.naming_sep_type[naming_sep_type]+"%(#)03d" % {"#":curAbsolute_number}
-                elif naming_anime == 2: # total anime freak only need the absolute number ! (note: =)
-                    goodEpString = "%(#)03d" % {"#":curAbsolute_number}
-            
-                for relEp in self.relatedEps:
-                    if relEp.absolute_number != 0:
-                        goodEpString += "-"+"%(#)03d" % {"#":relEp.absolute_number}
-                    else:
-                        goodEpString += "-"+"%(#)03d" % {"#":relEp.episode}
-            
-        #episode string end
-        
-        if goodName != '':
-            goodName = config.naming_sep_type[naming_sep_type] + goodName
-
-        finalName = ""
-
-        if naming_show_name:
-            finalName += self.show.name + config.naming_sep_type[naming_sep_type]
-
-        finalName += goodEpString
-
-        if naming_ep_name:
-            finalName += goodName
-
-        if naming_quality:
-            epStatus, epQual = Quality.splitCompositeStatus(self.status) #@UnusedVariable
-            if epQual != Quality.NONE:
-                finalName += config.naming_sep_type[naming_sep_type] + Quality.qualityStrings[epQual]
-
-        if naming_use_periods:
-            finalName = re.sub("\s+", ".", finalName)
-
-        return finalName
+        return self._format_pattern('%SN - %Sx%0E - %EN')
     
     def _ep_name(self):
         """
