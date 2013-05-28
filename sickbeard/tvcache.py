@@ -205,10 +205,13 @@ class TVCache():
         curTimestamp = int(time.mktime(datetime.datetime.today().timetuple()))
 
         if not quality:
-            quality = Quality.sceneQuality(name)
+            quality = cpr.quality
+        
+        if not season:
+            season = cpr.season
 
-        myDB.action("INSERT INTO "+self.providerID+" (name, season, episodes, tvrid, tvdbid, url, time, quality, release_group) VALUES (?,?,?,?,?,?,?,?)",
-                    [name, season, episodeText, tvrage_id, tvdb_id, url, curTimestamp, quality, release_group])
+        myDB.action("INSERT INTO "+self.providerID+" (name, season, episodes, tvrid, tvdbid, url, time, quality, release_group) VALUES (?,?,?,?,?,?,?,?,?)",
+                    [name, season, episodeText, tvrage_id, tvdb_id, url, curTimestamp, quality, cpr.release_group])
 
 
     def searchCache(self, episode, manualSearch=False):
