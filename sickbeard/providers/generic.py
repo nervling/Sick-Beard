@@ -295,7 +295,7 @@ class GenericProvider:
         itemList = []
         results = {}
 
-        for curString in self._get_season_search_strings(show, season, scene):
+        for curString in self._get_season_search_strings(show, season):
             itemList += self._doSearch(curString, show=show)
 
         for item in itemList:
