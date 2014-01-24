@@ -199,6 +199,10 @@ class ThePirateBayProvider(generic.TorrentProvider):
             for show_name in set(allPossibleShowNames(ep_obj.show)):
                 ep_string = sanitizeSceneName(show_name) + ' ' + str(ep_obj.airdate)
                 search_string['Episode'].append(ep_string)
+        elif ep_obj.show.anime:
+            for show_name in set(allPossibleShowNames(ep_obj.show)):
+                ep_string = sanitizeSceneName(show_name) + ' ' + str(ep_obj.absolute_number)
+                search_string['Episode'].append(ep_string)
         else:
             for show_name in set(allPossibleShowNames(ep_obj.show)):
                 ep_string = sanitizeSceneName(show_name) + ' ' + \

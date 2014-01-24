@@ -152,7 +152,7 @@ class CompleteParser(object):
             self.complete_result.season = self.raw_parse_result.season_number
             self.complete_result.episodes = self.raw_parse_result.episode_numbers
 
-        self.complete_result.quality = common.Quality.nameQuality(self.name_to_parse, bool(cur_show and cur_show.is_anime))
+        self.complete_result.quality = common.Quality.sceneQuality(self.name_to_parse, bool(cur_show and cur_show.is_anime))
         return self.complete_result
 
     def _convertADB(self, show, adb_part):

@@ -199,7 +199,7 @@ class Quality:
 
         checkName = lambda list, func: func([re.search(x, name, re.I) for x in list])
         if anime:
-            return nameQualityAnime(name)
+            return Quality.nameQualityAnime(name)
         elif checkName(["(pdtv|hdtv|dsr|tvrip|web.dl|webrip).(xvid|x264|h.?264)"], all) and not checkName(["(720|1080)[pi]"], all):
             return Quality.SDTV
         elif checkName(["(dvdrip|b[r|d]rip)(.ws)?.(xvid|divx|x264)"], any) and not checkName(["(720|1080)[pi]"], all):
@@ -228,7 +228,6 @@ class Quality:
     @staticmethod
     def nameQualityAnime(name):
         checkName = lambda list, func: func([re.search(x, name, re.I) for x in list])
-        
         
         blueRayOptions = checkName(["bluray", "blu-ray"], any)
         hdOptions = checkName(["720p", "1280x720", "960x720"], any)
