@@ -20,15 +20,13 @@
 
 import datetime
 import os
-import sys
 import re
-import urllib2
 
 import sickbeard
 
 from sickbeard import helpers, classes, logger, db, exceptions
 
-from sickbeard.common import Quality, MULTI_EP_RESULT, SEASON_RESULT
+from sickbeard.common import Quality, MULTI_EP_RESULT, SEASON_RESULT#, SEED_POLICY_TIME, SEED_POLICY_RATIO
 from sickbeard import tvcache
 from sickbeard import encodingKludge as ek
 from sickbeard.exceptions import ex
@@ -98,7 +96,7 @@ class GenericProvider:
             
         return result
 
-    def getURL(self, url, headers=None):
+    def getURL(self, url, post_data=None, headers=None):
         """
         By default this is just a simple urlopen call but this method should be overridden
         for providers with special URL requirements (like cookies)
@@ -107,13 +105,13 @@ class GenericProvider:
         if not headers:
             headers = []
 
-        result = helpers.getURL(url, headers)
+        data = helpers.getURL(url, post_data, headers)
 
-        if result is None:
-            logger.log(u"Error loading "+self.name+" URL: " + url, logger.ERROR)
+        if not data:
+            logger.log(u"Error loading " + self.name + " URL: " + url, logger.ERROR)
             return None
 
-        return result
+        return data
     
     def get_episode_search_strings(self,ep_obj):
         return self._get_episode_search_strings(ep_obj)
@@ -141,21 +139,21 @@ class GenericProvider:
             return False
 
         # use the result name as the filename
-        fileName = ek.ek(os.path.join, saveDir, helpers.sanitizeFileName(result.name) + '.' + self.providerType)
+        file_name = ek.ek(os.path.join, saveDir, helpers.sanitizeFileName(result.name) + '.' + self.providerType)
 
-        logger.log(u"Saving to " + fileName, logger.DEBUG)
+        logger.log(u"Saving to " + file_name, logger.DEBUG)
 
         try:
-            fileOut = open(fileName, writeMode)
+            fileOut = open(file_name, writeMode)
             fileOut.write(data)
             fileOut.close()
-            helpers.chmodAsParent(fileName)
+            helpers.chmodAsParent(file_name)
         except IOError, e:
-            logger.log("Unable to save the file: "+ex(e), logger.ERROR)
+            logger.log("Unable to save the file: " + ex(e), logger.ERROR)
             return False
 
         # as long as it's a valid download then consider it a successful snatch
-        return self._verify_download(fileName)
+        return self._verify_download(file_name)
 
     def _verify_download(self, file_name=None):
         """
@@ -178,6 +176,8 @@ class GenericProvider:
         return True
 
     def searchRSS(self):
+        
+        self._checkAuth() 
         self.cache.updateCache()
         return self.cache.findNeededEpisodes()
 
@@ -185,11 +185,11 @@ class GenericProvider:
         """
         Figures out the quality of the given RSS item node
         
-        item: An xml.dom.minidom.Node representing the <item> tag of the RSS feed
+        item: An elementtree.ElementTree element representing the <item> tag of the RSS feed
         
         Returns a Quality value obtained from the node's data 
         """
-        (title, url) = self._get_title_and_url(item) #@UnusedVariable
+        (title, url) = self._get_title_and_url(item) # @UnusedVariable
         logger.log(u"geting quality for:" + title+ " anime: "+str(anime),logger.DEBUG)
         quality = Quality.sceneQuality(title, anime)
         return quality
@@ -207,28 +207,23 @@ class GenericProvider:
         """
         Retrieves the title and URL data from the item XML node
 
-        item: An xml.dom.minidom.Node representing the <item> tag of the RSS feed
+        item: An elementtree.ElementTree element representing the <item> tag of the RSS feed
 
         Returns: A tuple containing two strings representing title and URL respectively
         """
+        title = helpers.get_xml_text(item.find('title'))
+        if title:
+            title = title.replace(' ', '.')
 
-        """we are here in the search provider it is ok to delete the /.
-        i am doing this because some show get posted with a / in the name
-        and during qulaity check it is reduced to the base name
-        """
+        url = helpers.get_xml_text(item.find('link'))
         title = helpers.get_xml_text(item.getElementsByTagName('title')[0]).replace("/"," ")
-        try:
-            url = helpers.get_xml_text(item.getElementsByTagName('link')[0])
-            if url:
-                url = url.replace('&amp;','&')
-        except IndexError:
-            url = None
-        
+        if url:
+            url = url.replace('&amp;', '&')
+            
         return (title, url)
-    
+        
     def findEpisode (self, episode, manualSearch=False, searchString=None):
 
-        self._checkAuth()
         if searchString:
             logger.log(u"Searching "+self.name+" for " + episode.prettyName())
         else:
@@ -236,7 +231,7 @@ class GenericProvider:
 
         self.cache.updateCache()
         results = self.cache.searchCache(episode, manualSearch)
-        logger.log(u"Cache results: "+str(results), logger.DEBUG)
+        logger.log(u"Cache results: " + str(results), logger.DEBUG)
 
         # if we got some results then use them no matter what.
         # OR
@@ -351,9 +346,9 @@ class GenericProvider:
 
         return results
 
-    def findPropers(self, date=None):
+    def findPropers(self, search_date=None):
 
-        results = self.cache.listPropers(date)
+        results = self.cache.listPropers(search_date)
 
         return [classes.Proper(x['name'], x['url'], datetime.datetime.fromtimestamp(x['time'])) for x in results]
 
@@ -373,3 +368,15 @@ class TorrentProvider(GenericProvider):
         GenericProvider.__init__(self, name)
 
         self.providerType = GenericProvider.TORRENT
+        
+#        self.option = {SEED_POLICY_TIME : '',
+#                       SEED_POLICY_RATIO: '',
+#                       'PROCESS_METHOD': ''
+#                       }
+    
+#    def get_provider_options(self):
+#        pass
+#    
+#    def set_provider_options(self):
+#        self.option[SEED_POLICY_TIME] + '|' + self.option[SEED_POLICY_RATIO] + '|' + self.option['PROCESS_METHOD']
+        

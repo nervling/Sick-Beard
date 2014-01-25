@@ -28,10 +28,13 @@ from sickbeard.common import Quality
 
 from sickbeard import helpers, exceptions, show_name_helpers, scene_exceptions
 from sickbeard import name_cache
-from sickbeard.exceptions import ex
+from sickbeard.exceptions import ex, AuthException
 
-#import xml.etree.cElementTree as etree
 import xml.dom.minidom
+try:
+    import xml.etree.cElementTree as etree
+except ImportError:
+    import elementtree.ElementTree as etree 
 
 from lib.tvdb_api import tvdb_api, tvdb_exceptions
 from sickbeard.completparser import CompleteParser
@@ -48,7 +51,7 @@ class CacheDBConnection(db.DBConnection):
             self.connection.execute(sql)
             self.connection.commit()
         except sqlite3.OperationalError, e:
-            if str(e) != "table "+providerName+" already exists":
+            if str(e) != "table " + providerName + " already exists":
                 raise
 
         # Create the table if it's not already there
@@ -76,7 +79,7 @@ class TVCache():
 
         myDB = self._getDB()
 
-        myDB.action("DELETE FROM "+self.providerID+" WHERE 1")
+        myDB.action("DELETE FROM " + self.providerID + " WHERE 1")
 
     def _getRSSData(self):
 
@@ -84,7 +87,7 @@ class TVCache():
 
         return data
 
-    def _checkAuth(self, data):
+    def _checkAuth(self, parsedXML):
         return True
 
     def _checkItemAuth(self, title, url):
@@ -95,61 +98,67 @@ class TVCache():
         if not self.shouldUpdate():
             return
 
-        data = self._getRSSData()
+        if self._checkAuth(None):
+            data = self._getRSSData()
 
-        # as long as the http request worked we count this as an update
-        if data:
-            self.setLastUpdate()
-        else:
-            return []
+            # as long as the http request worked we count this as an update
+            if data:
+                self.setLastUpdate()
+            else:
+                return []
+    
+            # now that we've loaded the current RSS feed lets delete the old cache
+            logger.log(u"Clearing " + self.provider.name + " cache and updating with new information")
+            self._clearCache()
+    
+            parsedXML = helpers.parse_xml(data)
+            
+            if parsedXML is None:
+                logger.log(u"Error trying to load " + self.provider.name + " RSS feed", logger.ERROR)
+                return []
+            
+            if self._checkAuth(parsedXML):
+                
+                if parsedXML.tag == 'rss':
+                    items = parsedXML.findall('.//item')
+                    
+                else:
+                    logger.log(u"Resulting XML from " + self.provider.name + " isn't RSS, not parsing it", logger.ERROR)
+                    return []
+                
+                for item in items:
+                    self._parseItem(item)
+    
+            else:
+                raise AuthException(u"Your authentication credentials for " + self.provider.name + " are incorrect, check your config")
+        
+        return []
 
-        # now that we've loaded the current RSS feed lets delete the old cache
-        logger.log(u"Clearing "+self.provider.name+" cache and updating with new information")
-        self._clearCache()
-
-        if not self._checkAuth(data):
-            raise exceptions.AuthException("Your authentication info for "+self.provider.name+" is incorrect, check your config")
-
-        try:
-            parsedXML = xml.dom.minidom.parseString(data)
-            items = parsedXML.getElementsByTagName('item')
-        except Exception, e:
-            logger.log(u"Error trying to load "+self.provider.name+" RSS feed: "+ex(e), logger.ERROR)
-            logger.log(u"Feed contents: "+repr(data), logger.DEBUG)
-            return []
-
-        if parsedXML.documentElement.tagName != 'rss':
-            logger.log(u"Resulting XML from "+self.provider.name+" isn't RSS, not parsing it", logger.ERROR)
-            return []
-
-        for item in items:
-
-            self._parseItem(item)
+    def _translateTitle(self, title):
+        return title.replace(' ', '.') 
 
     def _translateLinkURL(self, url):
-        return url.replace('&amp;','&')
-
+        return url.replace('&amp;', '&')
 
     def _parseItem(self, item):
-        """Return None
-        parse a single rss feed item and add its info to the chache
-        will check for needed infos
-        """
-        title = helpers.get_xml_text(item.getElementsByTagName('title')[0])
-        url = helpers.get_xml_text(item.getElementsByTagName('link')[0])
 
+        title = helpers.get_xml_text(item.find('title'))
+        url = helpers.get_xml_text(item.find('link'))
+        
         self._checkItemAuth(title, url)
 
+        if title and url:
         # we at least need a title and url, if one is missing stop
-        if not title or not url:
-            logger.log(u"The XML returned from the "+self.provider.name+" feed is incomplete, this result is unusable", logger.ERROR)
-            return
+            title = self._translateTitle(title)
+            url = self._translateLinkURL(url)
+            
+            logger.log(u"Adding item from RSS to cache: " + title, logger.DEBUG)
+            self._addCacheEntry(title, url)
+        
+        else:
+             logger.log(u"The XML returned from the " + self.provider.name + " feed is incomplete, this result is unusable", logger.DEBUG)
+             return
 
-        url = self._translateLinkURL(url)
-
-        logger.log(u"Adding item from RSS to cache: "+title, logger.DEBUG)
-
-        self._addCacheEntry(title, url)
 
     def _getLastUpdate(self):
         myDB = self._getDB()
@@ -177,7 +186,7 @@ class TVCache():
     def shouldUpdate(self):
         # if we've updated recently then skip the update
         if datetime.datetime.today() - self.lastUpdate < datetime.timedelta(minutes=self.minTime):
-            logger.log(u"Last update was too soon, using old cache: today()-"+str(self.lastUpdate)+"<"+str(datetime.timedelta(minutes=self.minTime)), logger.DEBUG)
+            logger.log(u"Last update was too soon, using old cache: today()-" + str(self.lastUpdate) + "<" + str(datetime.timedelta(minutes=self.minTime)), logger.DEBUG)
             return False
 
         return True
@@ -222,15 +231,15 @@ class TVCache():
 
         myDB = self._getDB()
 
-        sql = "SELECT * FROM "+self.providerID+" WHERE name LIKE '%.PROPER.%' OR name LIKE '%.REPACK.%'"
+        sql = "SELECT * FROM " + self.providerID + " WHERE name LIKE '%.PROPER.%' OR name LIKE '%.REPACK.%'"
 
         if date != None:
-            sql += " AND time >= "+str(int(time.mktime(date.timetuple())))
+            sql += " AND time >= " + str(int(time.mktime(date.timetuple())))
 
         #return filter(lambda x: x['tvdbid'] != 0, myDB.select(sql))
         return myDB.select(sql)
 
-    def findNeededEpisodes(self, episode = None, manualSearch=False):
+    def findNeededEpisodes(self, episode=None, manualSearch=False):
         neededEps = {}
 
         if episode:
@@ -239,7 +248,7 @@ class TVCache():
         myDB = self._getDB()
 
         if not episode:
-            sqlResults = myDB.select("SELECT * FROM "+self.providerID)
+            sqlResults = myDB.select("SELECT * FROM " + self.providerID)
         else:
             sqlResults = myDB.select("SELECT * FROM "+self.providerID+" WHERE tvdbid = ? AND season = ? AND episodes LIKE ?", [episode.show.tvdbid, episode.scene_season, "%|"+str(episode.scene_episode)+"|%"])
 
@@ -267,7 +276,7 @@ class TVCache():
 
             # if the show says we want that episode then add it to the list
             if not showObj.wantEpisode(curSeason, curEp, curQuality, manualSearch):
-                logger.log(u"Skipping "+curResult["name"]+" because we don't want an episode that's "+Quality.qualityStrings[curQuality], logger.DEBUG)
+                logger.log(u"Skipping " + curResult["name"] + " because we don't want an episode that's " + Quality.qualityStrings[curQuality], logger.DEBUG)
 
             else:
 

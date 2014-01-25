@@ -35,6 +35,8 @@ from sickbeard import notifiers
 from sickbeard import nzbSplitter
 from sickbeard import ui
 from sickbeard import encodingKludge as ek
+from sickbeard import failed_history
+
 from sickbeard.exceptions import ex
 from sickbeard import providers
 from sickbeard.blackandwhitelist import *
@@ -89,8 +91,8 @@ def _downloadResult(result):
         logger.log(u"Invalid provider type - this is a coding error, report it please", logger.ERROR)
         return False
 
-    if newResult:
-        ui.notifications.message('Episode snatched','<b>%s</b> snatched from <b>%s</b>' % (result.name, resProvider.name))
+    if newResult and sickbeard.USE_FAILED_DOWNLOADS:
+        ui.notifications.message('Episode snatched', '<b>%s</b> snatched from <b>%s</b>' % (result.name, resProvider.name))
 
     return newResult
 
@@ -129,7 +131,6 @@ def snatchEpisode(result, endStatus=SNATCHED):
         if sickbeard.TORRENT_METHOD == "blackhole": 
             dlResult = _downloadResult(result)
         else:
-
             result.content = result.provider.getURL(result.url) if not result.url.startswith('magnet') else None 
             client = clients.getClientIstance(sickbeard.TORRENT_METHOD)()
             dlResult = client.sendTORRENT(result)
@@ -139,6 +140,11 @@ def snatchEpisode(result, endStatus=SNATCHED):
 
     if dlResult == False:
         return False
+
+    if sickbeard.USE_FAILED_DOWNLOADS:
+        failed_history.logSnatch(result)
+    else:
+        ui.notifications.message('Episode snatched', result.name)
 
     history.logSnatch(result)
 
@@ -196,6 +202,11 @@ def searchForNeededEpisodes():
                     bestResult = curResult
 
             bestResult = pickBestResult(curFoundResults[curEp], show=curEp.show)
+            
+            # if all results were rejected move on to the next episode 
+            if not bestResult:
+                logger.log(u"All found results for "+curEp.prettyName()+" were rejected.", logger.DEBUG)
+                continue
 
             # if it's already in the list (from another provider) and the newly found quality is no better then skip it
             if curEp in foundResults and bestResult.quality <= foundResults[curEp].quality:
@@ -234,7 +245,11 @@ def pickBestResult(results, quality_list=None, show=None):
         if quality_list and cur_result.quality not in quality_list:
             logger.log(cur_result.name+" is a quality we know we don't want, rejecting it", logger.DEBUG)
             continue
-        
+
+        if sickbeard.USE_FAILED_DOWNLOADS and failed_history.hasFailed(cur_result.name, cur_result.size):
+            logger.log(cur_result.name + u" has previously failed, rejecting it")
+            continue
+
         if not bestResult or bestResult.quality < cur_result.quality and cur_result.quality != Quality.UNKNOWN:
             bestResult = cur_result
         elif bestResult.quality == cur_result.quality:
@@ -508,6 +523,10 @@ def findSeason(show, season, scene=False):
         for multiResult in foundResults[MULTI_EP_RESULT]:
 
             logger.log(u"Seeing if we want to bother with multi-episode result "+multiResult.name, logger.DEBUG)
+
+            if sickbeard.USE_FAILED_DOWNLOADS and failed_history.hasFailed(multiResult.name, multiResult.size):
+                logger.log(multiResult.name + u" has previously failed, rejecting this multi-ep result")
+                continue
 
             # see how many of the eps that this result covers aren't covered by single results
             neededEps = []

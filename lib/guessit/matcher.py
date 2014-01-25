@@ -19,15 +19,16 @@
 #
 
 from __future__ import unicode_literals
-from guessit import PY3, u
+from guessit import PY3, u, base_text_type
 from guessit.matchtree import MatchTree
+from guessit.textutils import normalize_unicode, clean_string
 import logging
 
 log = logging.getLogger(__name__)
 
 
 class IterativeMatcher(object):
-    def __init__(self, filename, filetype='autodetect'):
+    def __init__(self, filename, filetype='autodetect', opts=None):
         """An iterative matcher tries to match different patterns that appear
         in the filename.
 
@@ -61,9 +62,9 @@ class IterativeMatcher(object):
         (for more info, see guess.matchtree.to_string)
 
 
-         Second, it tries to merge all this information into a single object
-         containing all the found properties, and does some (basic) conflict
-         resolution when they arise.
+        Second, it tries to merge all this information into a single object
+        containing all the found properties, and does some (basic) conflict
+        resolution when they arise.
         """
 
         valid_filetypes = ('autodetect', 'subtitle', 'video',
@@ -73,8 +74,21 @@ class IterativeMatcher(object):
             raise ValueError("filetype needs to be one of %s" % valid_filetypes)
         if not PY3 and not isinstance(filename, unicode):
             log.warning('Given filename to matcher is not unicode...')
+            filename = filename.decode('utf-8')
+
+        filename = normalize_unicode(filename)
+
+        if opts is None:
+            opts = []
+        elif isinstance(opts, base_text_type):
+            opts = opts.split()
 
         self.match_tree = MatchTree(filename)
+
+        # sanity check: make sure we don't process a (mostly) empty string
+        if clean_string(filename) == '':
+            return
+
         mtree = self.match_tree
         mtree.guess.set('type', filetype, confidence=1.0)
 
@@ -112,12 +126,21 @@ class IterativeMatcher(object):
                          'guess_properties', 'guess_language',
                          'guess_video_rexps' ]
 
+        if 'nolanguage' in opts:
+            strategy.remove('guess_language')
+
         for name in strategy:
             apply_transfo(name)
 
         # more guessers for both movies and episodes
-        for name in ['guess_bonus_features', 'guess_year', 'guess_country']:
-            apply_transfo(name)
+        apply_transfo('guess_bonus_features')
+        apply_transfo('guess_year', skip_first_year=('skip_first_year' in opts))
+
+        if 'nocountry' not in opts:
+            apply_transfo('guess_country')
+
+        apply_transfo('guess_idnumber')
+
 
         # split into '-' separated subgroups (with required separator chars
         # around the dash)

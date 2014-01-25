@@ -81,7 +81,8 @@ class ServiceBase(object):
     def init(self):
         """Initialize connection"""
         logger.debug(u'Initializing %s' % self.__class__.__name__)
-        self.session = requests.session(timeout=10, headers={'User-Agent': self.user_agent})
+        self.session = requests.session()
+        self.session.headers.update({'User-Agent': self.user_agent}) 
 
     def init_cache(self):
         """Initialize cache, make sure it is loaded from disk"""
@@ -191,7 +192,7 @@ class ServiceBase(object):
         """
         logger.info(u'Downloading %s in %s' % (url, filepath))
         try:
-            r = self.session.get(url, headers={'Referer': url, 'User-Agent': self.user_agent})
+            r = self.session.get(url, timeout = 10, headers = {'Referer': url, 'User-Agent': self.user_agent})
             with open(filepath, 'wb') as f:
                 f.write(r.content)
         except Exception as e:
@@ -212,25 +213,17 @@ class ServiceBase(object):
         logger.info(u'Downloading %s in %s' % (url, filepath))
         try:
             zippath = filepath + '.zip'
-            r = self.session.get(url, headers={'Referer': url, 'User-Agent': self.user_agent})
+            r = self.session.get(url, timeout = 10, headers = {'Referer': url, 'User-Agent': self.user_agent})
             with open(zippath, 'wb') as f:
                 f.write(r.content)
             if not zipfile.is_zipfile(zippath):
                 # TODO: could check if maybe we already have a text file and
                 # download it directly
                 raise DownloadFailedError('Downloaded file is not a zip file')
-#            with zipfile.ZipFile(zippath) as zipsub:
-#                for subfile in zipsub.namelist():
-#                    if os.path.splitext(subfile)[1] in EXTENSIONS:
-#                        with open(filepath, 'w') as f:
-#                            f.write(zipsub.open(subfile).read())
-#                        break
-#                else:
-#                    raise DownloadFailedError('No subtitles found in zip file')
             zipsub = zipfile.ZipFile(zippath)
             for subfile in zipsub.namelist():
                 if os.path.splitext(subfile)[1] in EXTENSIONS:
-                    with open(filepath, 'w') as f:
+                    with open(filepath, 'wb') as f:
                         f.write(zipsub.open(subfile).read())
                     break
             else:

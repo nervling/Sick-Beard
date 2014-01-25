@@ -28,6 +28,8 @@
     },
     format: function(s) {
         if (s.indexOf('Loading...') == 0)
+        	return s.replace('Loading...','000');
+		else
 		#if not $sickbeard.SORT_ARTICLE:
 			return (s || '').replace(/^(The|A|An)\s/i,'');
 		#else:
@@ -198,7 +200,7 @@ $myShowList.sort(lambda x, y: cmp(x.name, y.name))
     #set $den = $curShowAll[0]
   #end if
 #else
-  #set $dlStat = "?"
+  #set $dlStat = "0"
   #set $nom = 0
   #set $den = 1
 #end if
@@ -269,5 +271,4 @@ $myShowList.sort(lambda x, y: cmp(x.name, y.name))
 </tbody>
 </table>
 #end for
-<script type="text/javascript" src="$sbRoot/js/tableClick.js?$sbPID"></script>
 #include $os.path.join($sickbeard.PROG_DIR,"gui/slick/interfaces/default/inc_bottom.tmpl")

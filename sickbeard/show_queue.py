@@ -311,19 +311,33 @@ class QueueItemAdd(ShowQueueItem):
             logger.log(u"Error loading IMDb info: " + ex(e), logger.ERROR)
             logger.log(traceback.format_exc(), logger.DEBUG)
 
+        try:
+            self.show.saveToDB()
+        except Exception, e:
+            logger.log(u"Error saving the show to the database: " + ex(e), logger.ERROR)
+            logger.log(traceback.format_exc(), logger.DEBUG)
+            self._finishEarly()
+            raise
+        
         # add it to the show list
-        sickbeard.showList.append(self.show)
+        sickbeard.showList.append(self.show)         
         
         try:
             self.show.loadEpisodesFromTVDB()
+        except Exception, e:
+            logger.log(u"Error with TVDB, not creating episode list: " + ex(e), logger.ERROR)
+            logger.log(traceback.format_exc(), logger.DEBUG)
+
+        try:
             self.show.setTVRID()
 
             self.show.writeMetadata()
             self.show.populateCache()
             
         except Exception, e:
-            logger.log(u"Error with TVDB, not creating episode list: " + ex(e), logger.ERROR)
+            logger.log(u"Error with TVRage, not setting tvrid" + ex(e), logger.ERROR)
             logger.log(traceback.format_exc(), logger.DEBUG)
+
 
         # before we parse local files lets update exceptions
         scene_exceptions.retrieve_exceptions()
@@ -343,7 +357,7 @@ class QueueItemAdd(ShowQueueItem):
         try:
             self.show.saveToDB()
         except Exception, e:
-            logger.log(u"Error saving the episode to the database: " + ex(e), logger.ERROR)
+            logger.log(u"Error searching dir for episodes: " + ex(e), logger.ERROR)
             logger.log(traceback.format_exc(), logger.DEBUG)
 
         # if they gave a custom status then change all the eps to it
@@ -462,6 +476,9 @@ class QueueItemUpdate(ShowQueueItem):
             self.show.loadFromTVDB(cache=not self.force)
         except tvdb_exceptions.tvdb_error, e:
             logger.log(u"Unable to contact TVDB, aborting: " + ex(e), logger.WARNING)
+            return
+        except tvdb_exceptions.tvdb_attributenotfound, e:
+            logger.log(u"Data retrieved from TVDB was incomplete, aborting: " + ex(e), logger.ERROR)
             return
 
         logger.log(u"Retrieving show info from IMDb", logger.DEBUG)

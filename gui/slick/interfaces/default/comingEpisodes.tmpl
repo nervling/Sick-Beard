@@ -1,7 +1,7 @@
 #import sickbeard
 #import datetime
 #from sickbeard.common import *
-#set global $title=""
+#set global $title="Coming Episodes"
 #set global $header="Coming Episodes"
 
 #set global $sbPath=".."
@@ -139,7 +139,7 @@
 
     <!-- start $cur_result["show_name"] //-->
       <tr class="$show_div">
-        <td align="center" class="nowrap">$cur_result["localtime"].strftime('%c').decode($sickbeard.SYS_ENCODING)<span class="sort_data">$time.mktime($cur_result["localtime"].timetuple())</span></td>
+        <td align="center" class="nowrap">$cur_result["localtime"].strftime('%x').decode($sickbeard.SYS_ENCODING).replace('/','-')<span class="sort_data">$time.mktime($cur_result["localtime"].timetuple())</span></td>
         <td class="tvShow"><a href="$sbRoot/home/displayShow?show=${cur_result["showid"]}">$cur_result["show_name"]</a>
             #if int($cur_result["paused"]):
             <span class="pause">[paused]</span>
@@ -165,7 +165,7 @@
         	<a href="http://www.imdb.com/title/${cur_result["imdb_id"]}" onclick="window.open(this.href, '_blank'); return false;" title="http://www.imdb.com/title/${cur_result["imdb_id"]}"><img alt="[imdb]" height="16" width="16" src="$sbRoot/images/imdb.png" /> 
         #end if
         </td>
-        <td align="center"><a href="http://thetvdb.com/?tab=series&amp;id=${cur_result["showid"]}" onclick="window.open(this.href, '_blank'); return false;" title="http://thetvdb.com/?tab=series&amp;id=${cur_result["showid"]}"><img alt="[tvdb]" height="16" width="16" src="$sbRoot/images/thetvdb16.png" /></a></td>
+        <td align="center"><a href="http://thetvdb.com/?tab=series&amp;id=${cur_result["showid"]}" rel="noreferrer" onclick="window.open('${sickbeard.ANON_REDIRECT}' + this.href, '_blank'); return false;" title="http://thetvdb.com/?tab=series&amp;id=${cur_result["showid"]}"><img alt="[tvdb]" height="16" width="16" src="$sbRoot/images/thetvdb16.png" /></a></td>
         <td align="center">
         <a href="$sbRoot/home/searchEpisode?show=${cur_result["showid"]}&amp;season=$cur_result["season"]&amp;episode=$cur_result["episode"]" title="Manual Search" id="forceUpdate-${cur_result["showid"]}" class="forceUpdate epSearch"><img alt="[search]" height="16" width="16" src="$sbRoot/images/search32.png" id="forceUpdateImage-${cur_result["showid"]}" /></a>
         </td>
@@ -299,13 +299,13 @@
           	  </a></h2>
           	  <span class="tvshowTitleIcons">
 				#if $cur_result["imdb_id"]:          	  	
-          	      <a href="http://www.imdb.com/title/${cur_result["imdb_id"]}" onclick="window.open(this.href, '_blank'); return false;" title="http://www.imdb.com/title/${cur_result["imdb_id"]}"><img alt="[imdb]" height="16" width="16" src="$sbRoot/images/imdb.png" /> 
+          	      <a href="http://www.imdb.com/title/${cur_result["imdb_id"]}" rel="noreferrer" onclick="window.open('${sickbeard.ANON_REDIRECT}' + this.href, '_blank'); return false;" title="http://www.imdb.com/title/${cur_result["imdb_id"]}"><img alt="[imdb]" height="16" width="16" src="$sbRoot/images/imdb.png" /> 
           	    #end if  
-          	      <a href="http://thetvdb.com/?tab=series&amp;id=${cur_result["showid"]}" onclick="window.open(this.href, '_blank'); return false;" title="http://thetvdb.com/?tab=series&amp;id=${cur_result["showid"]}"><img alt="[tvdb]" height="16" width="16" src="$sbRoot/images/thetvdb16.png" /></a>
+          	      <a href="http://thetvdb.com/?tab=series&amp;id=${cur_result["showid"]}" rel="noreferrer" onclick="window.open('${sickbeard.ANON_REDIRECT}' + this.href, '_blank'); return false;" title="http://thetvdb.com/?tab=series&amp;id=${cur_result["showid"]}"><img alt="[tvdb]" height="16" width="16" src="$sbRoot/images/thetvdb16.png" /></a>
           	      <span><a href="$sbRoot/home/searchEpisode?show=${cur_result["showid"]}&amp;season=$cur_result["season"]&amp;episode=$cur_result["episode"]" title="Manual Search" id="forceUpdate-${cur_result["showid"]}" class="epSearch forceUpdate"><img alt="[search]" height="16" width="16" src="$sbRoot/images/search32.png" id="forceUpdateImage-${cur_result["showid"]}" /></a></span>
           	  </span>
           	</div>
-            <span class="title">Next Episode:</span> <span><%=str(cur_result["season"])+"x"+"%02i" % int(cur_result["episode"]) %> - $cur_result["name"] ($datetime.date.fromordinal(int($cur_result["airdate"])))</span>
+            <span class="title">Next Episode:</span> <span><%=str(cur_result["season"])+"x"+"%02i" % int(cur_result["episode"]) %> - $cur_result["name"] ($cur_result["localtime"].strftime('%x').decode($sickbeard.SYS_ENCODING).replace('/','-'))</span>
             <div class="clearfix">
             	<span class="title">Airs:</span> <span>$cur_result["localtime_string"].decode($sickbeard.SYS_ENCODING) on $cur_result["network"]</span>
 	        </div>
@@ -349,5 +349,4 @@ window.setInterval( "location.reload(true)", 600000); // Refresh every 10 minute
 //-->
 </script>
 
-<script type="text/javascript" src="$sbRoot/js/tableClick.js?$sbPID"></script>
 #include $os.path.join($sickbeard.PROG_DIR, "gui/slick/interfaces/default/inc_bottom.tmpl")

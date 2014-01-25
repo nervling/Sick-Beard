@@ -22,6 +22,7 @@ from __future__ import unicode_literals
 from guessit import s, u
 import os.path
 import zipfile
+import io
 
 
 def split_path(path):
@@ -43,13 +44,14 @@ def split_path(path):
     result = []
     while True:
         head, tail = os.path.split(path)
+        headlen = len(head)
 
         # on Unix systems, the root folder is '/'
-        if head == '/' and tail == '':
+        if head and head == '/'*headlen and tail == '':
             return ['/'] + result
 
         # on Windows, the root folder is a drive letter (eg: 'C:\') or for shares \\
-        if ((len(head) == 3 and head[1:] == ':\\') or (len(head) == 2 and head == '\\\\')) and tail == '':
+        if ((headlen == 3 and head[1:] == ':\\') or (headlen == 2 and head == '\\\\')) and tail == '':
             return [head] + result
 
         if head == '' and tail == '':
@@ -60,6 +62,7 @@ def split_path(path):
             path = head
             continue
 
+        # otherwise, add the last path fragment and keep splitting
         result = [tail] + result
         path = head
 
@@ -84,4 +87,4 @@ def load_file_in_same_dir(ref_file, filename):
             zfile = zipfile.ZipFile(zfilename)
             return zfile.read('/'.join(path[i + 1:]))
 
-    return u(open(os.path.join(*path)).read())
+    return u(io.open(os.path.join(*path), encoding='utf-8').read())

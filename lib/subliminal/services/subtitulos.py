@@ -34,9 +34,9 @@ class Subtitulos(ServiceBase):
     server_url = 'http://www.subtitulos.es'
     site_url = 'http://www.subtitulos.es'
     api_based = False
-    languages = language_set(['eng-US', 'eng-GB', 'eng', 'fre', 'por-BR', 'por', 'spa-ES', u'spa', u'ita', u'cat'])
+    languages = language_set(['eng-US', 'eng-GB', 'eng', 'fre', 'pob', 'por', 'spa-ES', u'spa', u'ita', u'cat'])
     language_map = {u'Español': Language('spa'), u'Español (España)': Language('spa'), #u'Español (Latinoamérica)': Language('spa'),
-                    u'Català': Language('cat'), u'Brazilian': Language('por-BR'), u'English (US)': Language('eng-US'),
+                    u'Català': Language('cat'), u'Brazilian': Language('pob'), u'English (US)': Language('eng-US'),
                     u'English (UK)': Language('eng-GB'), 'Galego': Language('glg')}
     language_code = 'name'
     videos = [Episode]
@@ -52,7 +52,7 @@ class Subtitulos(ServiceBase):
         return self.query(video.path or video.release, languages, get_keywords(video.guess), video.series, video.season, video.episode)
 
     def query(self, filepath, languages, keywords, series, season, episode):
-        request_series = series.lower().replace(' ', '_').replace('&', '@').replace('(','').replace(')','')
+        request_series = series.lower().replace(' ', '-').replace('&', '@').replace('(','').replace(')','')
         if isinstance(request_series, unicode):
             request_series = unicodedata.normalize('NFKD', request_series).encode('ascii', 'ignore')
         logger.debug(u'Getting subtitles for %s season %d episode %d with languages %r' % (series, season, episode, languages))

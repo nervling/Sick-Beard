@@ -65,6 +65,28 @@
                                 <span class="component-title">Process Episode Method:</span>
                                 <span class="component-desc">
                                     <select name="process_method" id="process_method" class="input-medium" >
+                                        #set $process_method_text = {'copy': "Copy", 'move': "Move", 'hardlink': "Hard Link", 'symlink' : "Symbolic Link"}
+                                        #for $curAction in ('copy', 'move', 'hardlink', 'symlink'):
+                                          #if $sickbeard.PROCESS_METHOD == $curAction:
+                                            #set $process_method = "selected=\"selected\""
+                                          #else
+                                            #set $process_method = ""
+                                          #end if
+                                        <option value="$curAction" $process_method>$process_method_text[$curAction]</option>
+                                        #end for
+                                    </select>                                
+                                </span>
+                            </label>
+                            <label class="nocheck clearfix">
+                                <span class="component-title">&nbsp;</span>
+                                <span class="component-desc">What method should be used to put file in the TV directory?</span>
+                            </label>
+                        </div>
+						<div class="field-pair">
+                            <label class="nocheck clearfix" for="process_method">
+                                <span class="component-title">Process Episode Method:</span>
+                                <span class="component-desc">
+                                    <select name="process_method" id="process_method" class="input-medium" >
                                         #set $process_method_text = {'copy': "Copy", 'move': "Move", 'hardlink': "Physical Link", 'symlink' : "Symbolic Link"}
                                         #for $curAction in ('copy', 'move', 'hardlink', 'symlink'):
                                           #if $sickbeard.PROCESS_METHOD == $curAction:
@@ -80,6 +102,8 @@
                             <label class="nocheck clearfix">
                                 <span class="component-title">&nbsp;</span>
                                 <span class="component-desc">What method should be used to put the renamed file in the TV directory?</span>
+						    </label>						    
+						</div>
                             </label>
                         </div>
 
@@ -99,9 +123,23 @@
                             <input type="checkbox" name="rename_episodes" id="rename_episodes" #if $sickbeard.RENAME_EPISODES == True then "checked=\"checked\"" else ""# />
                             <label class="clearfix" for="rename_episodes">
                                 <span class="component-title">Rename Episodes</span>
-                                <span class="component-desc">Rename episode using the naming settings below?</span>
+                                <span class="component-desc">Rename episode using the Episode Naming settings?</span>
                             </label>
-                        </div>
+                        </div> 
+                        <div class="field-pair">
+			                      <label class="nocheck clearfix">
+			                          <span class="component-title">Extra Scripts</span>
+			                          <input type="text" name="extra_scripts" value="<%='|'.join(sickbeard.EXTRA_SCRIPTS)%>" size="35" />
+			                      </label>
+			                      <label class="nocheck clearfix">
+			                         <span class="component-title">&nbsp;</span>
+			                          <span class="component-desc">Additional scripts separated by <b>|</b>.</span>
+			                      </label>
+			                      <label class="nocheck clearfix">
+			                          <span class="component-title">&nbsp;</span>
+			                          <span class="component-desc"><b>NOTE:</b> Scripts are called after Sick Beard's own post-processing.</span>
+			                      </label>						    
+			                  </div>
 
                         <div class="field-pair">
                             <input type="checkbox" name="process_automatically" id="process_automatically" #if $sickbeard.PROCESS_AUTOMATICALLY == True then "checked=\"checked\"" else ""# />
@@ -111,8 +149,51 @@
                             </label>
                             <label class="nocheck clearfix" for="process_automatically">
                                 <span class="component-title">&nbsp;</span>
-                                <span class="component-desc"><b>NOTE:</b> Do not use if you use sabToSickbeard w/ SABnzbd+!</span>
+                                <span class="component-desc"><b>NOTE:</b> Do not use if you use PostProcesing external script</span>
                             </label>
+                            <label class="nocheck clearfix">
+                                <span class="component-title">&nbsp;</span>
+                                <span class="component-desc">eg. NZBMedia w/ NZBGET, sabToSickbeard w/ SABnzbd+!</span>
+                            </label>                            
+                        </div>
+
+                        <div class="field-pair">
+                            <input id="unpack" type="checkbox" name="unpack" #if $sickbeard.UNPACK == True then "checked=\"checked\"" else ""# />
+                            <label class="clearfix" for="unpack">
+                                <span class="component-title">Unpack</span>
+                                <span class="component-desc">Unpack any TV releases in your <i>TV Download Dir</i>?</span>
+                            </label>
+                            <label class="nocheck clearfix" for="unpack">
+                                <span class="component-title">&nbsp;</span>
+                                <span class="component-desc"><b>NOTE:</b> Only working with RAR archive</span>
+                            </label>
+                        </div>
+                    
+                        <div class="field-pair">
+                            <input id="use_failed_downloads" type="checkbox" class="enabler" name="use_failed_downloads" #if $sickbeard.USE_FAILED_DOWNLOADS == True then "checked=\"checked\"" else ""# />
+                            <label class="clearfix" for="use_failed_downloads">
+                                <span class="component-title">Use Failed Downloads</span>
+                                <span class="component-desc">Use Failed Download Handling?</span>
+                            </label>
+                            <label class="nocheck clearfix" for="use_failed_downloads">
+                                <span class="component-title">&nbsp;</span>
+                                <span class="component-desc"><b>NOTE:</b> See <i>readme-FailedDownloads.md</i> before enabling.</span>
+                            </label>
+                        </div>
+						
+                        <div id="content_use_failed_downloads">
+                            <div class="field-pair">
+                                <input id="delete_failed" type="checkbox" name="delete_failed" #if $sickbeard.DELETE_FAILED == True then "checked=\"checked\"" else ""# />
+                                <label class="clearfix" for="delete_failed">
+                                    <span class="component-title">Delete Failed</span>
+                                    <span class="component-desc">Delete files left over from a failed download?</span>
+                                </label>
+                                <label class="nocheck clearfix" for="delete_failed">
+                                    <span class="component-title">&nbsp;</span>
+                                    <span class="component-desc"><b>NOTE:</b> This only works if Use Failed Downloads is enabled.</span>
+                                </label>
+                            </div>
+
                         </div>
 
                         <div class="clearfix"></div>

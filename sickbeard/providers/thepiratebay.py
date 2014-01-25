@@ -39,11 +39,12 @@ proxy_dict = {
               'Getprivate.eu (NL)' : 'http://getprivate.eu/',
               '15bb51.info (US)' : 'http://15bb51.info/',
               'Hideme.nl (NL)' : 'http://hideme.nl/',
-              'Rapidproxy.us (GB)' : 'http://rapidproxy.us/',
               'Proxite.eu (DE)' :'http://proxite.eu/',
-              'Shieldmagic.com (GB)' : 'http://www.shieldmagic.com/',
               'Webproxy.cz (CZ)' : 'http://webproxy.cz/',
-              'Freeproxy.cz (CZ)' : 'http://www.freeproxy.cz/',
+              '2me2u (CZ)' : 'http://2me2u.me/',
+              'Interproxy.net (EU)': 'http://interproxy.net/',
+              'Unblockersurf.info (DK)' : 'http://unblockersurf.info',
+              'Hiload.org (NL)' : 'http://hiload.org',
              }
 
 class ThePirateBayProvider(generic.TorrentProvider):
@@ -58,7 +59,7 @@ class ThePirateBayProvider(generic.TorrentProvider):
         
         self.proxy = ThePirateBayWebproxy() 
         
-        self.url = 'http://thepiratebay.se/'
+        self.url = 'http://pirateproxy.net/'
 
         self.searchurl = self.url + 'search/%s/0/7/200'  # order by seed       
 
@@ -127,8 +128,12 @@ class ThePirateBayProvider(generic.TorrentProvider):
 
         #Filtering SingleEpisode/MultiSeason Torrent
         if len(videoFiles) < ep_number or len(videoFiles) > float(ep_number * 1.1 ): 
+            logger.log(u"Result " + title + " have " + str(ep_number) + " episode and episodes retrived in torrent are " + str(len(videoFiles)), logger.DEBUG)
             logger.log(u"Result " + title + " Seem to be a Single Episode or MultiSeason torrent, skipping result...", logger.DEBUG)
             return None
+        
+        if Quality.sceneQuality(title) != Quality.UNKNOWN:
+            return title
             
         for fileName in videoFiles:
             quality = Quality.sceneQuality(os.path.basename(fileName))
@@ -215,23 +220,26 @@ class ThePirateBayProvider(generic.TorrentProvider):
         return [search_string]
 
     def _doSearch(self, search_params, show=None):
-    
+
         results = []
-        items = {'Season': [], 'Episode': []}
+        items = {'Season': [], 'Episode': [], 'RSS': []}
 
         for mode in search_params.keys():
             for search_string in search_params[mode]:
 
-                searchURL = self.proxy._buildURL(self.searchurl %(urllib.quote(unidecode(search_string)))) 
-        
+                if mode != 'RSS':
+                    searchURL = self.proxy._buildURL(self.searchurl %(urllib.quote(unidecode(search_string))))
+                else:
+                    searchURL = self.proxy._buildURL(self.url + 'tv/latest/')
+
                 logger.log(u"Search string: " + searchURL, logger.DEBUG)
-        
+
                 data = self.getURL(searchURL)
                 if not data:
                     continue
-        
+
                 re_title_url = self.proxy._buildRE(self.re_title_url)
-                
+
                 #Extracting torrent information from data returned by searchURL                   
                 match = re.compile(re_title_url, re.DOTALL ).finditer(urllib.unquote(data))
                 for torrent in match:
@@ -243,31 +251,31 @@ class ThePirateBayProvider(generic.TorrentProvider):
                     leechers = int(torrent.group('leechers'))
 
                     #Filter unseeded torrent
-                    if seeders == 0:
+                    if mode != 'RSS' and seeders == 0:
                         continue 
-                   
+
                     #Accept Torrent only from Good People for every Episode Search
                     if sickbeard.THEPIRATEBAY_TRUSTED and re.search('(VIP|Trusted|Helper)',torrent.group(0))== None:
                         logger.log(u"ThePirateBay Provider found result " + torrent.group('title') + " but that doesn't seem like a trusted result so I'm ignoring it", logger.DEBUG)
                         continue
 
-                    #Try to find the real Quality for full season torrent analyzing files in torrent 
-                    if mode == 'Season' and Quality.sceneQuality(title) == Quality.UNKNOWN:     
-                        ep_number = int(len(search_params['Episode']) / len(allPossibleShowNames(self.show)))
+                    #Check number video files = episode in season and find the real Quality for full season torrent analyzing files in torrent 
+                    if mode == 'Season':
+                        ep_number = int(len(search_params['Episode']) / len(set(allPossibleShowNames(self.show))))
                         title = self._find_season_quality(title,id, ep_number)
-                        
-                    if not title:
+
+                    if not title or not url:
                         continue
-                        
+
                     item = title, url, id, seeders, leechers
-                    
-                    items[mode].append(item)    
+
+                    items[mode].append(item)
 
             #For each search mode sort all the items by seeders
             items[mode].sort(key=lambda tup: tup[3], reverse=True)        
 
             results += items[mode]  
-                
+
         return results
 
     def _get_title_and_url(self, item):
@@ -292,7 +300,7 @@ class ThePirateBayProvider(generic.TorrentProvider):
         result = None
 
         try:
-            result = helpers.getURL(url, headers)
+            result = helpers.getURL(url, headers=headers)
         except (urllib2.HTTPError, IOError), e:
             logger.log(u"Error loading " + self.name + " URL: " + str(sys.exc_info()) + " - " + ex(e), logger.ERROR)
             return None
@@ -345,55 +353,23 @@ class ThePirateBayCache(tvcache.TVCache):
 
     def updateCache(self):
 
-        re_title_url = self.provider.proxy._buildRE(self.provider.re_title_url)
-                
         if not self.shouldUpdate():
             return
 
-        data = self._getData()
-
-        # as long as the http request worked we count this as an update
-        if data:
+        search_params = {'RSS': ['rss']}
+        rss_results = self.provider._doSearch(search_params)
+        
+        if rss_results:
             self.setLastUpdate()
         else:
             return []
-
-        # now that we've loaded the current RSS feed lets delete the old cache
+        
         logger.log(u"Clearing " + self.provider.name + " cache and updating with new information")
         self._clearCache()
 
-        match = re.compile(re_title_url, re.DOTALL).finditer(urllib.unquote(data))
-        if not match:
-            logger.log(u"The Data returned from the ThePirateBay is incomplete, this result is unusable", logger.ERROR)
-            return []
-                
-        for torrent in match:
-
-            title = torrent.group('title').replace('_','.')#Do not know why but SickBeard skip release with '_' in name
-            url = torrent.group('url')
-           
-            if not title or not url:
-                continue
-           
-            #accept torrent only from Trusted people
-            if sickbeard.THEPIRATEBAY_TRUSTED and re.search('(VIP|Trusted|Helper)',torrent.group(0))== None:
-                logger.log(u"ThePirateBay Provider found result " + torrent.group('title') + " but that doesn't seem like a trusted result so I'm ignoring it",logger.DEBUG)
-                continue
-           
-            item = (title,url)
-
+        for result in rss_results:
+            item = (result[0], result[1])
             self._parseItem(item)
-
-    def _getData(self):
-       
-        #url for the last 50 tv-show
-        url = self.provider.proxy._buildURL(self.provider.url + 'tv/latest/')
-
-        logger.log(u"ThePirateBay cache update URL: " + url, logger.DEBUG)
-
-        data = self.provider.getURL(url)
-
-        return data
 
     def _parseItem(self, item):
 

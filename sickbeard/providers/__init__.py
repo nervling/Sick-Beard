@@ -18,15 +18,16 @@
 
 __all__ = ['ezrss',
            'tvtorrents',
-           'nzbsrus',
            'womble',
            'fanzub',
            'btn',
            'thepiratebay',
-           'dtt',
-           'torrentleech',
            'kat',
-           'nzbx',
+           'publichd', 
+           'torrentleech',
+           'scc',
+           'torrentday',
+           'hdbits',
            'iptorrents',
            'omgwtfnzbs'
            ]
@@ -37,7 +38,7 @@ from os import sys
 
 def sortedProviderList():
 
-    initialList = sickbeard.providerList + sickbeard.newznabProviderList
+    initialList = sickbeard.providerList + sickbeard.newznabProviderList + sickbeard.torrentRssProviderList
     providerDict = dict(zip([x.getID() for x in initialList], initialList))
 
     newList = []
@@ -101,6 +102,24 @@ def makeNewznabProvider(configString):
 
     return newProvider
 
+def getTorrentRssProviderList(data):
+    providerList = filter(lambda x: x, [makeTorrentRssProvider(x) for x in data.split('!!!')])
+    return filter(lambda x: x, providerList)
+
+def makeTorrentRssProvider(configString):
+
+    if not configString:
+        return None
+
+    name, url, enabled = configString.split('|')
+
+    torrentRss = sys.modules['sickbeard.providers.rsstorrent']
+
+    newProvider = torrentRss.TorrentRssProvider(name, url)
+    newProvider.enabled = enabled == '1'
+
+    return newProvider
+
 def getDefaultNewznabProviders():
     return 'Sick Beard Index|http://lolo.sickbeard.com/|0|0!!!NZBs.org|http://nzbs.org/||0!!!Usenet-Crawler|http://www.usenet-crawler.com/||0'
 
@@ -110,11 +129,11 @@ def getProviderModule(name):
     if name in __all__ and prefix+name in sys.modules:
         return sys.modules[prefix+name]
     else:
-        raise Exception("Can't find "+prefix+name+" in "+"Providers")
+        raise Exception("Can't find " + prefix+name + " in " + "Providers")
 
 def getProviderClass(id):
 
-    providerMatch = [x for x in sickbeard.providerList+sickbeard.newznabProviderList if x.getID() == id]
+    providerMatch = [x for x in sickbeard.providerList + sickbeard.newznabProviderList + sickbeard.torrentRssProviderList if x.getID() == id]
 
     if len(providerMatch) != 1:
         return None

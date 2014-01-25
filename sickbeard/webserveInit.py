@@ -42,7 +42,7 @@ def initWebServer(options = {}):
             if status != "401 Unauthorized":
                 logger.log(u"CherryPy caught an error: %s %s" % (status, message), logger.ERROR)
                 logger.log(traceback, logger.DEBUG)
-            return r'''
+            return r'''<!DOCTYPE html>
 <html>
     <head>
         <title>%s</title>
@@ -56,13 +56,13 @@ def initWebServer(options = {}):
 
         def http_error_404_hander(status, message, traceback, version):
             """ Custom handler for 404 error, redirect back to main page """
-            return r'''
+            return r'''<!DOCTYPE html>
 <html>
     <head>
         <title>404</title>
         <script type="text/javascript" charset="utf-8">
           <!--
-          location.href = "%s"
+          location.href = "%s/"
           //-->
         </script>
     </head>
@@ -70,7 +70,7 @@ def initWebServer(options = {}):
         <br/>
     </body>
 </html>
-''' % '/'
+''' % options['web_root']
 
         # cherrypy setup
         enable_https = options['enable_https']
@@ -90,10 +90,26 @@ def initWebServer(options = {}):
                 sickbeard.ENABLE_HTTPS = False
                 enable_https = False
 
+        mime_gzip = ('text/html',
+                     'text/plain',
+                     'text/css',
+                     'text/javascript',
+                     'application/javascript',
+                     'text/x-javascript',
+                     'application/x-javascript',
+                     'text/x-json',
+                     'application/json'
+                     ) 
+
         options_dict = {
                         'server.socket_port': options['port'],
                         'server.socket_host': options['host'],
                         'log.screen':         False,
+                        'engine.autoreload.on': False,
+                        'engine.autoreload.frequency': 100,
+                        'engine.reexec_retry': 100,
+                        'tools.gzip.on': True,
+                        'tools.gzip.mime_types': mime_gzip,                         
                         'error_page.401':     http_error_401_hander,
                         'error_page.404':     http_error_404_hander,
         }
@@ -136,6 +152,27 @@ def initWebServer(options = {}):
 
         # auth
         if options['username'] != "" and options['password'] != "":
+            if sickbeard.CALENDAR_UNPROTECTED:
+                checkpassword = cherrypy.lib.auth_basic.checkpassword_dict({options['username']: options['password']})
+                app.merge({
+                        '/': {
+                                'tools.auth_basic.on':            True,
+                                'tools.auth_basic.realm':         'SickBeard',
+                                'tools.auth_basic.checkpassword': checkpassword
+                        },
+                        '/api':{
+                                'tools.auth_basic.on':            False
+                        },
+                        '/calendar':{
+                                'tools.auth_basic.on':            False
+                        },
+                        '/api/builder':{
+                                'tools.auth_basic.on':            True,
+                                'tools.auth_basic.realm':         'SickBeard',
+                                'tools.auth_basic.checkpassword': checkpassword
+                        }
+                })
+            else:
                 checkpassword = cherrypy.lib.auth_basic.checkpassword_dict({options['username']: options['password']})
                 app.merge({
                         '/': {

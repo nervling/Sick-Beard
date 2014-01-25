@@ -19,7 +19,8 @@
 __all__ = ['utorrent',
            'transmission',
            'deluge',
-           'download_station'
+           'download_station',
+           'rtorrent'
            ]
 
 import sickbeard
@@ -65,12 +66,14 @@ default_host = {'utorrent':'http://localhost:8000',
                 'transmission' :'http://localhost:9091', 
                 'deluge':'http://localhost:8112',
                 'download_station': 'http://localhost:5000',
+                'rtorrent': 'scgi://localhost:5000',
                 }
 
 def getClientModule(name):
 
     name = name.lower()
     prefix = "sickbeard.clients."
+    
     return __import__(prefix+name, fromlist=__all__)
 
 def getClientIstance(name):

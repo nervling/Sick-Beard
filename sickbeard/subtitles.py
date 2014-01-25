@@ -44,7 +44,7 @@ def sortedServiceList():
     # add any services that are missing from that list
     for curService in servicesMapping.keys():
         if curService not in [x['id'] for x in newList]:
-            curServiceDict = {'id': curService, 'image': curService+'.png', 'name': servicesMapping[curService], 'enabled': False, 'api_based': servicesMapping[curService] in subliminal.SERVICES, 'url': ''}
+            curServiceDict = {'id': curService, 'image': curService+'.png', 'name': servicesMapping[curService], 'enabled': False, 'api_based': __import__('lib.subliminal.services.' + curService, globals=globals(), locals=locals(), fromlist=['Service'], level=-1).Service.api_based, 'url': __import__('lib.subliminal.services.' + curService, globals=globals(), locals=locals(), fromlist=['Service'], level=-1).Service.site_url}
             newList.append(curServiceDict)
 
     return newList
@@ -123,8 +123,25 @@ class SubtitlesFinder():
                 # Recent shows rule 
                 (epToSub['airdate_daydiff'] <= 7 and epToSub['searchcount'] < 7 and now - datetime.datetime.strptime(epToSub['lastsearch'], '%Y-%m-%d %H:%M:%S') > datetime.timedelta(hours=rules['new'][epToSub['searchcount']]))):
                 logger.log('Downloading subtitles for episode %dx%d of show %s' % (epToSub['season'], epToSub['episode'], epToSub['show_name']), logger.DEBUG)
-                helpers.findCertainShow(sickbeard.showList, int(epToSub['showid'])).getEpisode(int(epToSub["season"]), int(epToSub["episode"])).downloadSubtitles()
-            
+                
+                showObj = helpers.findCertainShow(sickbeard.showList, int(epToSub['showid']))
+                if not showObj:
+                    logger.log(u'Show not found', logger.DEBUG)
+                    return
+                
+                epObj = showObj.getEpisode(int(epToSub["season"]), int(epToSub["episode"]))
+                if isinstance(epObj, str):
+                    logger.log(u'Episode not found', logger.DEBUG)
+                    return
+                
+                previous_subtitles = epObj.subtitles
+                
+                try:
+                    subtitles = epObj.downloadSubtitles()
+
+                except:
+                    logger.log(u'Unable to find subtitles', logger.DEBUG)
+                    return
 
     def _getRules(self):
         """
