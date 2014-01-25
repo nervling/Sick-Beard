@@ -19,7 +19,6 @@
 __all__ = ['ezrss',
            'tvtorrents',
            'womble',
-           'fanzub',
            'btn',
            'thepiratebay',
            'kat',

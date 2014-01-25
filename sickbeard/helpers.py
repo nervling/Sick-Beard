@@ -129,7 +129,7 @@ def isMediaFile(filename):
         return False
         
 
-    sepFile = file.rpartition(".")
+    sepFile = filename.rpartition(".")
     if sepFile[2].lower() in mediaExtensions:
         return True
     else:

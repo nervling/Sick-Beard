@@ -304,8 +304,8 @@ def delete_files(processPath, notwantedFiles):
 
     #Delete all file not needed
     for cur_file in notwantedFiles:
-                if sickbeard.PROCESS_METHOD != "move" or not process_result:
-                    break
+        if sickbeard.PROCESS_METHOD != "move" or not process_result:
+            break
 
         cur_file_path = ek.ek(os.path.join, processPath, cur_file)
 
